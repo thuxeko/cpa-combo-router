@@ -40,9 +40,16 @@ type resourceRoute struct {
 	Description string `json:"Description"`
 }
 
+// modelRouterValidationRequest mirrors the object the dashboard POSTs to
+// /validate, which is the same object it later PATCHes to /config. Keeping the
+// two shapes identical is the point of the endpoint: whatever the panel
+// validates is exactly what it saves. Adding a field to the dashboard payload
+// without adding it here turns every save into a 400 (DisallowUnknownFields).
 type modelRouterValidationRequest struct {
 	Enabled               *bool            `json:"enabled"`
+	Priority              *int             `json:"priority,omitempty"`
 	Routes                []modelRouteYAML `json:"routes"`
+	LegacyRoutes          json.RawMessage  `json:"model-routes,omitempty"`
 	ErrorPolicy           *errorPolicyYAML `json:"error_policy,omitempty"`
 	AttemptTimeoutSeconds *int             `json:"attempt_timeout_seconds,omitempty"`
 }
@@ -132,12 +139,34 @@ func validateModelRouterManagementConfig(body []byte) pluginapi.ManagementRespon
 	if request.Enabled != nil {
 		enabled = *request.Enabled
 	}
+	// The panel always sends model-routes as an explicit null, so only a real
+	// array counts as "the caller used the legacy key". Passing it through means
+	// a payload that sets both keys fails here with the same message the config
+	// loader would give, instead of validating clean and breaking on PATCH.
+	var legacyRoutes *[]modelRouteYAML
+	if trimmed := bytes.TrimSpace(request.LegacyRoutes); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+		var parsed []modelRouteYAML
+		if err := json.Unmarshal(trimmed, &parsed); err != nil {
+			return modelRouterJSONResponse(http.StatusBadRequest, map[string]any{
+				"valid":   false,
+				"error":   "invalid_request",
+				"message": "model-routes: " + err.Error(),
+			})
+		}
+		legacyRoutes = &parsed
+	}
+	priority := 0
+	if request.Priority != nil {
+		priority = *request.Priority
+	}
 	wire := struct {
-		Enabled               bool             `yaml:"enabled"`
-		Routes                []modelRouteYAML `yaml:"routes"`
-		ErrorPolicy           *errorPolicyYAML `yaml:"error_policy,omitempty"`
-		AttemptTimeoutSeconds *int             `yaml:"attempt_timeout_seconds,omitempty"`
-	}{Enabled: enabled, Routes: request.Routes, ErrorPolicy: request.ErrorPolicy, AttemptTimeoutSeconds: request.AttemptTimeoutSeconds}
+		Enabled               bool              `yaml:"enabled"`
+		Priority              int               `yaml:"priority,omitempty"`
+		Routes                []modelRouteYAML  `yaml:"routes"`
+		LegacyRoutes          *[]modelRouteYAML `yaml:"model-routes,omitempty"`
+		ErrorPolicy           *errorPolicyYAML  `yaml:"error_policy,omitempty"`
+		AttemptTimeoutSeconds *int              `yaml:"attempt_timeout_seconds,omitempty"`
+	}{Enabled: enabled, Priority: priority, Routes: request.Routes, LegacyRoutes: legacyRoutes, ErrorPolicy: request.ErrorPolicy, AttemptTimeoutSeconds: request.AttemptTimeoutSeconds}
 	raw, err := yaml.Marshal(wire)
 	if err != nil {
 		return modelRouterJSONResponse(http.StatusInternalServerError, map[string]any{
