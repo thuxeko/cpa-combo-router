@@ -1,0 +1,16 @@
+<template id="policy-rule-template">
+  <div class="policy-rule">
+    <input class="policy-statuses" type="text" data-policy-field="status" placeholder="429" autocomplete="off" aria-label="Mã trạng thái, cách nhau bằng dấu phẩy">
+    <select class="policy-select" data-policy-field="action" aria-label="Hành động cho các mã này"></select>
+    <label class="policy-cooldown">
+      <span class="sr-only">Cooldown (giây)</span>
+      <input type="number" min="0" step="1" inputmode="numeric" data-policy-field="cooldown_seconds" aria-label="Cooldown (giây)">
+    </label>
+    <span class="policy-unit">giây</span>
+    <div class="policy-flags">
+      <label class="policy-flag"><input type="checkbox" data-policy-field="honor_retry_after"> <span>Theo Retry-After của nhà cung cấp</span></label>
+      <label class="policy-flag"><input type="checkbox" data-policy-field="backoff"> <span>Nhân đôi mỗi lần lỗi</span></label>
+    </div>
+    <button class="danger-button" type="button" data-action="remove-rule">Xoá</button>
+  </div>
+</template>

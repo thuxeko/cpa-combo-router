@@ -1,0 +1,52 @@
+    <section id="policy-panel" class="tab-panel" role="tabpanel" aria-labelledby="policy-tab" hidden>
+      <section class="control-strip" aria-label="Cách xử lý khi lỗi">
+        <div class="priority-field">
+          <label for="attempt-timeout">Bỏ chờ sau (giây)</label>
+          <input id="attempt-timeout" type="number" min="0" step="1" inputmode="numeric">
+        </div>
+        <p class="strip-note">Chỉ đếm tới lúc byte đầu tiên về. Khi một đích đã bắt đầu trả lời thì không cắt nữa, vì nửa câu trả lời không thể đưa cho nhà cung cấp khác. Để 0 là chờ mãi.</p>
+      </section>
+
+      <div class="section-head">
+        <div class="section-title">
+          <h2>Khi một đích gặp lỗi</h2>
+          <span id="policy-count" class="count">0 quy tắc</span>
+        </div>
+        <button id="policy-add-rule" class="secondary" type="button">Thêm quy tắc</button>
+      </div>
+
+      <section class="policy-card">
+        <div class="policy-head">
+          <h3>Quy tắc theo mã trạng thái</h3>
+          <p>Mỗi mã trạng thái trả về sẽ tra ở bảng này. Mã không có trong bảng sẽ theo dòng mặc định ở dưới cùng.</p>
+        </div>
+        <div id="policy-rules" class="policy-rules" aria-live="polite"></div>
+        <div id="policy-default-row" class="policy-default">
+          <span class="policy-default-label">Không có trong bảng trên</span>
+          <select id="policy-default-action" class="policy-select" aria-label="Hành động mặc định cho mã chưa khai báo"></select>
+          <label class="policy-cooldown">
+            <span class="sr-only">Cooldown mặc định (giây)</span>
+            <input id="policy-default-cooldown" type="number" min="0" step="1" inputmode="numeric" aria-label="Cooldown mặc định (giây)">
+          </label>
+          <span class="policy-unit">giây</span>
+          <span id="policy-default-summary" class="policy-summary"></span>
+        </div>
+      </section>
+
+      <div class="policy-legend">
+        <div class="legend-card">
+          <h3>Thử đích kế tiếp</h3>
+          <p>Chuyển sang nhà cung cấp kế tiếp và cho đích vừa lỗi nghỉ đúng thời gian đã đặt.</p>
+        </div>
+        <div class="legend-card">
+          <h3>Dừng lại</h3>
+          <p>Trả nguyên lỗi về cho client. Không thử đích khác và không phạt đích nào.</p>
+        </div>
+        <div class="legend-card">
+          <h3>Thử tiếp, không phạt</h3>
+          <p>Vẫn chuyển sang đích khác nhưng bỏ qua lỗi cho đích đó. Dành cho mã lạ chưa rõ nghĩa.</p>
+        </div>
+      </div>
+
+      <div id="policy-warnings" class="policy-warnings" hidden></div>
+    </section>

@@ -1,0 +1,41 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check out minimum supported CPA v7.3.9
+        uses: actions/checkout@v7
+        with:
+          repository: router-for-me/CLIProxyAPI
+          ref: 61fdfc341b96178a8dcb53f2efc46cbc341d267c
+          path: .cpa-source
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check formatting
+        run: test -z "$(gofmt -l *.go)"
+      - name: Check release scripts
+        run: bash -n .github/xgo/*.sh
+      - run: go test ./...
+      - run: go test -race ./...
+      - run: go vet ./...
+      - name: Test minimum supported CPA integration
+        run: CPA_SOURCE="$GITHUB_WORKSPACE/.cpa-source" go test -tags=integration ./... -count=1
+      - name: Build native plugin
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -o dist/combo-router.so .

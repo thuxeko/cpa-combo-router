@@ -1,0 +1,43 @@
+    <section id="configuration-panel" class="tab-panel" role="tabpanel" aria-labelledby="configuration-tab">
+      <section class="control-strip" aria-label="Thiết lập plugin">
+        <label class="toggle-wrap">
+          <span class="toggle">
+            <input id="plugin-enabled" type="checkbox">
+            <span aria-hidden="true"></span>
+          </span>
+          Bật plugin
+        </label>
+        <div class="priority-field">
+          <label for="plugin-priority">Độ ưu tiên</label>
+          <input id="plugin-priority" type="number" step="1" inputmode="numeric">
+        </div>
+        <span id="save-state" class="save-state" data-dirty="false">Đã nạp từ CPA</span>
+      </section>
+
+      <section class="flow-rail" aria-label="Luồng định tuyến model">
+        <span class="flow-node">Alias của client</span><span class="flow-line"></span>
+        <span class="flow-node action">Chọn đích</span><span class="flow-line"></span>
+        <span class="flow-node gate">Cổng cooldown</span><span class="flow-line"></span>
+        <span class="flow-node">CPA thực thi</span>
+      </section>
+
+      <div class="section-head">
+        <div class="section-title">
+          <h2>Danh sách tuyến</h2>
+          <span id="route-count" class="count">0 tuyến</span>
+          <span id="model-status" class="count catalog-status" data-tone="loading" aria-live="polite">Đang nạp model từ CPA…</span>
+        </div>
+        <button id="add-route" class="secondary" type="button">Thêm tuyến</button>
+      </div>
+      <section id="routes" class="routes" aria-live="polite"></section>
+
+      <div id="configuration-actions" class="configuration-actions-dock" aria-hidden="true" hidden inert>
+        <div id="configuration-actions-bar" class="footer-bar">
+          <span class="footer-hint">Khi lưu, hệ thống kiểm tra alias trùng, tham chiếu vòng, danh sách đích và cooldown bằng chính bộ phân tích Go của plugin.</span>
+          <div class="footer-actions">
+            <button id="reload" class="secondary" type="button">Bỏ thay đổi và nạp lại</button>
+            <button id="save" class="primary" type="button">Lưu thay đổi</button>
+          </div>
+        </div>
+      </div>
+    </section>

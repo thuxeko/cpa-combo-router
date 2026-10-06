@@ -1,0 +1,136 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to publish or refresh, for example v0.4.2.
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test ./...
+      - run: go vet ./...
+      - run: bash -n .github/xgo/*.sh
+
+  build:
+    name: cross-build release assets
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      XGO_IMAGE: ghcr.io/techknowlogick/xgo@sha256:b00957d8fec512c4748a5fafe17197be1d8c0bf704b271fc4aa128f5ddf40414
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Validate release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "release tag must be v<major>.<minor>.<patch>"
+            exit 1
+          fi
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+      - name: Cross-compile and package native libraries
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/xgo/release.sh \
+            "$XGO_IMAGE" \
+            github.com/thuxeko/cpa-combo-router \
+            combo-router \
+            "$VERSION"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-assets
+          path: |
+            dist/*.zip
+            dist/checksums.txt
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Validate downloaded assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          expected=(
+            "combo-router_${version}_linux_amd64.zip"
+            "combo-router_${version}_linux_arm64.zip"
+            "combo-router_${version}_darwin_amd64.zip"
+            "combo-router_${version}_darwin_arm64.zip"
+            "combo-router_${version}_windows_amd64.zip"
+          )
+
+          cd release-assets
+          for archive in "${expected[@]}"; do
+            test -f "$archive"
+            entries="$(unzip -Z1 "$archive")"
+            case "$archive" in
+              *_windows_*) [[ "$entries" == 'combo-router.dll' ]] ;;
+              *_darwin_*) [[ "$entries" == 'combo-router.dylib' ]] ;;
+              *) [[ "$entries" == 'combo-router.so' ]] ;;
+            esac
+          done
+          mapfile -t archives < <(find . -maxdepth 1 -type f -name '*.zip' -printf '%f\n' | sort)
+          [[ "${#archives[@]}" -eq 5 ]]
+          sha256sum -c checksums.txt
+      - name: Create or update GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find release-assets -maxdepth 1 -type f -printf '%p\n' | sort)
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" --title "$RELEASE_TAG" --generate-notes --verify-tag
+          fi

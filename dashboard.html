@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Combo Router</title>
+<style>
+{{include "dashboard/shared.css"}}
+{{include "dashboard/configuration/styles.css"}}
+{{include "dashboard/policy/styles.css"}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header id="masthead" class="masthead">
+    <div>
+      <p class="eyebrow">Bản đồ thực thi CPA</p>
+      <h1>Combo Router</h1>
+      <p class="lede">Gán alias cố định của client vào danh sách model CPA theo thứ tự, và quyết định điều gì xảy ra khi một đích gặp lỗi.</p>
+    </div>
+    <section id="auth-dock" class="auth-dock" aria-labelledby="auth-title" hidden>
+      <label id="auth-title" for="management-key">Không dùng được phiên CPAMC</label>
+      <div class="auth-row">
+        <input id="management-key" type="password" autocomplete="current-password" placeholder="Nhập khoá quản trị CPA">
+        <button id="connect" type="button">Tải cấu hình</button>
+      </div>
+      <p id="auth-note" class="auth-note" aria-live="polite">Nhập khoá cho phiên trình duyệt này.</p>
+    </section>
+  </header>
+
+  <main id="workspace" class="workspace" hidden>
+    <nav class="page-tabs" role="tablist" aria-label="Các mục của Combo Router">
+      <button id="configuration-tab" class="page-tab" type="button" role="tab" aria-selected="true" aria-controls="configuration-panel" tabindex="0">Tuyến</button>
+      <button id="policy-tab" class="page-tab" type="button" role="tab" aria-selected="false" aria-controls="policy-panel" tabindex="-1">Chính sách lỗi</button>
+    </nav>
+
+{{include "dashboard/configuration/panel.html"}}
+{{include "dashboard/policy/panel.html"}}
+  </main>
+</div>
+
+{{include "dashboard/shared/elements.html"}}
+{{include "dashboard/configuration/templates.html"}}
+{{include "dashboard/policy/templates.html"}}
+<script>
+{{include "dashboard/shared.js"}}
+{{include "dashboard/tabs.js"}}
+{{include "dashboard/configuration/tab.js"}}
+{{include "dashboard/policy/tab.js"}}
+{{include "dashboard/app.js"}}
+</script>
+</body>
+</html>
