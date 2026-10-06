@@ -8,7 +8,7 @@
 .policy-head p{margin:0;font-size:12.5px;color:var(--muted);line-height:1.55}
 
 .policy-rules{display:flex;flex-direction:column}
-.policy-rule{display:grid;grid-template-columns:minmax(150px,1.3fr) minmax(150px,1.1fr) 92px auto 1.6fr auto;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--line)}
+.policy-rule{display:grid;grid-template-columns:minmax(150px,1.3fr) minmax(150px,1.1fr) auto 1.6fr auto;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--line)}
 .policy-rule:hover{background:var(--surface-soft)}
 .policy-rule.is-stop{background:var(--danger-soft)}
 .policy-rule.is-stop .policy-cooldown input,.policy-rule.is-stop .policy-flag{opacity:.45}
@@ -22,10 +22,14 @@
 .policy-flag input{margin:0;cursor:pointer}
 .policy-flag input:disabled{cursor:not-allowed}
 
-.policy-default{display:flex;align-items:center;gap:12px;padding:14px 20px;background:var(--surface-soft);border-top:1px solid var(--line)}
+.policy-default{display:flex;flex-wrap:wrap;align-items:center;gap:10px 12px;padding:14px 20px;background:var(--surface-soft);border-top:1px solid var(--line)}
 .policy-default.is-stop{background:var(--danger-soft)}
-.policy-default-label{font-size:12.5px;font-weight:600;color:var(--ink);white-space:nowrap}
-.policy-default .policy-select{flex:0 0 auto;min-width:170px}
+.policy-default-label{font-size:12.5px;font-weight:600;color:var(--ink)}
+/* A drop-down has no intrinsic width of its own, so as a flex item with
+   flex-basis:auto it resolves against the container and swallows the row,
+   squeezing its siblings to zero. Bound it and let the row wrap instead. */
+.policy-default .policy-select{flex:0 0 auto;width:auto;max-width:min(230px,100%);min-width:140px}
+.policy-default .policy-cell-cooldown{flex:0 0 auto;min-width:0}
 .policy-default .policy-cooldown input{width:92px;text-align:right}
 .policy-default.is-stop .policy-cooldown input{opacity:.45}
 .policy-summary{font-size:12px;color:var(--muted);margin-left:auto;white-space:nowrap}
@@ -40,10 +44,52 @@
 .policy-warnings ul{margin:6px 0 0;padding-left:18px}
 .policy-warnings li{margin:2px 0}
 
+/* The cooldown box and its "giây" unit are one unit: without this wrapper the
+   unit is its own grid item and lands on a line of its own, detached from the
+   number it belongs to. The wrapper is a single grid cell, and the box and unit
+   sit inside it. */
+.policy-cell-cooldown{display:flex;align-items:center;gap:7px;min-width:0}
+.policy-cell{min-width:0}
+
 @media (max-width:820px){
   .policy-rule{grid-template-columns:1fr 1fr;gap:10px;padding:14px 16px}
   .policy-rule .policy-statuses,.policy-rule .policy-flags{grid-column:1/-1}
   .policy-rule .danger-button{grid-column:2;justify-self:end}
   .policy-default{flex-wrap:wrap}
   .policy-summary{margin-left:0;width:100%}
+}
+
+/* A phone cannot hold even two columns here: the action select and the cooldown
+   box need ~150px each, and the action buttons have to sit somewhere too. One
+   column, full-width controls, each with a visible label — stacked full-width
+   fields with no labels force the user to guess which box is which. */
+@media (max-width:560px){
+  /* The strip reuses the routes tab's 3-column control strip, but this tab only
+     has two children, so the note lands in a narrow column beside the input.
+     One column: the label and box, then the explanation across the full width. */
+  .control-strip{grid-template-columns:minmax(0,1fr);gap:11px;padding:14px}
+  .control-strip .priority-field{grid-template-columns:auto minmax(0,1fr)}
+  .control-strip .priority-field input{width:100%;max-width:120px}
+  .strip-note{max-width:none}
+  .policy-head{padding:14px 14px 10px}
+  .policy-rule{grid-template-columns:minmax(0,1fr);gap:11px;padding:13px 14px}
+  .policy-rule .policy-statuses,.policy-rule .policy-flags{grid-column:auto}
+  .policy-rule .danger-button{grid-column:auto;justify-self:start}
+  .policy-select{width:100%}
+  .policy-cell-cooldown .policy-cooldown{flex:1 1 auto;min-width:0}
+  .policy-cell-cooldown .policy-cooldown input{width:100%}
+  .policy-default{flex-direction:column;align-items:stretch;padding:13px 14px}
+  .policy-default .policy-select{width:100%;min-width:0}
+  .policy-default .policy-cooldown input{width:100%}
+  .policy-default-label{white-space:normal}
+  /* Only the default row needs the label; the rule rows already sit under a
+     "Quy tắc theo mã trạng thái" heading, and repeating it five times is noise. */
+  .policy-default .policy-cell-cooldown::before{
+    content:"Cooldown";
+    color:var(--muted);
+    font-size:11px;
+    font-weight:800;
+  }
+  .policy-default .policy-cell-cooldown{flex-wrap:wrap;gap:4px 7px}
+  .policy-default .policy-cell-cooldown::before{flex:1 1 100%}
 }

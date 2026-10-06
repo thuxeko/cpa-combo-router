@@ -54,10 +54,12 @@
   <div class="target-row">
     <span class="target-number"></span>
     <select data-target-field="model" aria-label="Model CPA làm đích"></select>
-    <label class="target-weight"><span class="sr-only">Trọng số xoay vòng</span><input type="number" data-target-field="weight" min="1" max="1000000" step="1" inputmode="numeric" aria-label="Trọng số xoay vòng"></label>
-    <label class="target-cooldown"><span class="sr-only">Cooldown riêng cho đích này (giây)</span><input type="number" data-target-field="cooldown_seconds" min="0" step="1" inputmode="numeric" aria-label="Cooldown riêng cho đích này (giây)" placeholder="tuyến"></label>
-    <button class="icon-button" type="button" data-action="target-up" aria-label="Đưa đích lên">↑</button>
-    <button class="icon-button" type="button" data-action="target-down" aria-label="Đưa đích xuống">↓</button>
-    <button class="danger-button" type="button" data-action="remove-target">Xoá</button>
+    <div class="target-controls">
+      <label class="target-weight"><span class="sr-only">Trọng số xoay vòng</span><input type="number" data-target-field="weight" min="1" max="1000000" step="1" inputmode="numeric" aria-label="Trọng số xoay vòng"></label>
+      <label class="target-cooldown"><span class="sr-only">Cooldown riêng cho đích này (giây)</span><input type="number" data-target-field="cooldown_seconds" min="0" step="1" inputmode="numeric" aria-label="Cooldown riêng cho đích này (giây)" placeholder="tuyến"></label>
+      <button class="icon-button" type="button" data-action="target-up" aria-label="Đưa đích lên">↑</button>
+      <button class="icon-button" type="button" data-action="target-down" aria-label="Đưa đích xuống">↓</button>
+      <button class="danger-button" type="button" data-action="remove-target">Xoá</button>
+    </div>
   </div>
 </template>

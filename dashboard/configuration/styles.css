@@ -148,6 +148,11 @@ input[type="text"], input[type="number"], input[type="password"], select {
 /* A weighted row carries one extra control (the weight box), so it needs one
    more column. Without this the trailing buttons wrap onto a second line. */
 .target-row[data-weighted="true"] { grid-template-columns: auto minmax(0, 1fr) 76px 84px auto auto auto; }
+/* The reorder/remove buttons and the two optional boxes live in a wrapper so the
+   phone layout can stack them as one group. On desktop the wrapper dissolves and
+   its children are the grid items they have always been — the column counts
+   above still describe the real child count. */
+.target-controls { display: contents; }
 .target-number { width: 28px; color: var(--muted); text-align: center; font: 700 11px/1 "Cascadia Code", "SFMono-Regular", ui-monospace, monospace; }
 .target-row[data-model-availability="unavailable"] select { background: var(--amber-soft); border-color: var(--amber-border); }
 .target-weight { min-width: 0; }
@@ -211,4 +216,117 @@ input[type="text"], input[type="number"], input[type="password"], select {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
   .configuration-actions-dock { transform: none !important; }
+}
+
+/* Phone layout. Every strip on this tab is a fixed multi-column grid — a 3-cell
+   control strip, a 7-cell flow rail, a 2-column route card and up to a 7-cell
+   target row. None of them fit a 360px viewport, and a fixed-column grid does
+   not shrink: it overflows the card and clips the right edge. Below 720px each
+   strip is unpinned into a stack instead. */
+@media (max-width: 720px) {
+  /* CPAMC's floating chrome sits over the top of the page on a phone. Same
+     clearance the other plugin tabs use, so the first card stays clear of it. */
+  body { padding-top: 60px; }
+  .shell { width: min(1180px, calc(100% - 24px)); padding: 18px 0 40px; }
+  h1 { font-size: clamp(26px, 8vw, 34px); }
+  .lede { margin-top: 10px; font-size: 14px; }
+
+  /* Toggle and priority share a row; the save state drops to its own line
+     instead of being squeezed into a four-line vertical sliver. */
+  .control-strip { grid-template-columns: auto minmax(0, 1fr); gap: 12px 14px; padding: 14px; }
+  .priority-field { grid-template-columns: auto minmax(0, 1fr); }
+  .priority-field input { width: 100%; max-width: 120px; }
+  .save-state { grid-column: 1 / -1; justify-self: start; }
+
+  /* The connector lines are pure decoration, so the nodes wrap rather than
+     pushing "CPA thực thi" off the right edge. */
+  .flow-rail { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 14px; }
+  .flow-line { display: none; }
+
+  .section-head { flex-direction: column; align-items: stretch; gap: 10px; margin-top: 22px; }
+  .section-head .secondary { width: 100%; white-space: nowrap; }
+
+  /* The ordinal rail becomes a header bar so the form body gets full width. */
+  .route-card { grid-template-columns: minmax(0, 1fr); }
+  .route-rail {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    text-align: left;
+    border-right: 0;
+    border-bottom: 1px solid var(--blue-border);
+  }
+  .ordinal { font-size: 18px; }
+  .rail-label { margin-top: 0; }
+  .route-body { padding: 14px; }
+  .route-top { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .route-actions { justify-content: flex-start; }
+
+  /* Alias and target count stack, and long model ids wrap instead of running
+     past the card edge. */
+  .route-preview { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .preview-line { display: none; }
+  .preview-alias, .preview-targets { white-space: normal; overflow-wrap: anywhere; text-align: left; }
+
+  /* Strategy and cooldown each take a full row rather than two cramped halves. */
+  .field-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .field { grid-column: 1 / -1; }
+
+  /* Target row: model picker on the first line, its controls grouped on the
+     second. On desktop the weight and cooldown boxes rely on their column
+     position to explain themselves (their labels are screen-reader only), so on
+     a phone they get visible ones. */
+  .target-row, .target-row[data-weighted="true"] {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px;
+    padding: 12px 0;
+    border-top: 1px solid var(--line);
+  }
+  .target-list { gap: 0; }
+  .target-list > .target-row:first-child { border-top: 0; }
+  .target-number { flex: 0 0 20px; }
+  .target-controls {
+    display: flex;
+    flex-wrap: wrap;
+    grid-column: 1 / -1;
+    gap: 8px;
+    align-items: center;
+  }
+  /* The box is removed outright on an unweighted route, so its label must go
+     with it — `display: grid` here would otherwise override the UA's
+     `[hidden] { display: none }` and leave a label with no input. */
+  .target-weight[hidden] { display: none; }
+  .target-weight, .target-cooldown { display: grid; gap: 4px; flex: 0 0 auto; min-width: 0; }
+  .target-weight { width: 62px; }
+  .target-cooldown { width: 86px; max-width: none; }
+  .target-weight::before, .target-cooldown::before {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.2;
+  }
+  .target-weight::before { content: "Trọng số"; }
+  .target-cooldown::before { content: "Chờ riêng"; }
+  /* Reorder and remove travel together, pushed to the right of the second line. */
+  .target-row [data-action="target-up"] { margin-left: auto; }
+
+  /* The help marker and the add-target button each get their own line. */
+  .targets-head { flex-direction: column; align-items: stretch; gap: 9px; }
+  .targets-head .secondary { width: 100%; white-space: nowrap; }
+
+  /* Footer dock: hint above, two full-width actions below. */
+  .footer-bar { flex-direction: column; align-items: stretch; gap: 10px; padding: 11px 13px; }
+  .footer-hint { font-size: 11px; }
+  .footer-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .footer-actions button { width: 100%; white-space: nowrap; }
+}
+
+@media (max-width: 420px) {
+  .shell { width: calc(100% - 18px); }
+  .control-strip, .flow-rail, .route-body { padding-right: 12px; padding-left: 12px; }
+  .target-weight { width: 56px; }
+  .target-cooldown { width: 78px; }
+  .footer-actions { grid-template-columns: minmax(0, 1fr); }
 }

@@ -24,11 +24,13 @@
         <div id="policy-default-row" class="policy-default">
           <span class="policy-default-label">Không có trong bảng trên</span>
           <select id="policy-default-action" class="policy-select" aria-label="Hành động mặc định cho mã chưa khai báo"></select>
-          <label class="policy-cooldown">
-            <span class="sr-only">Cooldown mặc định (giây)</span>
-            <input id="policy-default-cooldown" type="number" min="0" step="1" inputmode="numeric" aria-label="Cooldown mặc định (giây)">
-          </label>
-          <span class="policy-unit">giây</span>
+          <div class="policy-cell policy-cell-cooldown">
+            <label class="policy-cooldown">
+              <span class="sr-only">Cooldown mặc định (giây)</span>
+              <input id="policy-default-cooldown" type="number" min="0" step="1" inputmode="numeric" aria-label="Cooldown mặc định (giây)">
+            </label>
+            <span class="policy-unit">giây</span>
+          </div>
           <span id="policy-default-summary" class="policy-summary"></span>
         </div>
       </section>
