@@ -190,7 +190,7 @@ type errorRuleYAML struct {
 
 // errorPolicyYAML is the wire form of the whole policy.
 type errorPolicyYAML struct {
-	Default *errorRuleYAML  `yaml:"default,omitempty" json:"default,omitempty"`
+	Default *errorRuleYAML   `yaml:"default,omitempty" json:"default,omitempty"`
 	Rules   *[]errorRuleYAML `yaml:"rules,omitempty" json:"rules,omitempty"`
 }
 

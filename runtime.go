@@ -55,10 +55,10 @@ type persistedRuntime struct {
 }
 
 type persistedRoute struct {
-	Signature string             `json:"signature"`
-	Cursor    int64              `json:"cursor"`
-	Cooldowns map[string]string  `json:"cooldowns,omitempty"`
-	Failures  map[string]int     `json:"failures,omitempty"`
+	Signature string            `json:"signature"`
+	Cursor    int64             `json:"cursor"`
+	Cooldowns map[string]string `json:"cooldowns,omitempty"`
+	Failures  map[string]int    `json:"failures,omitempty"`
 }
 
 func newRouteRuntime(now func() time.Time) *routeRuntime {
