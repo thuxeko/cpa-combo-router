@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -229,5 +230,40 @@ func TestStreamModelRewriterSeparatesGluedSSEEvents(t *testing.T) {
 	payload := rewriter.Rewrite([]byte(`data: {"model":"one"}data: {"model":"two"}`))
 	if strings.Count(string(payload), `"model":"smart"`) != 2 || strings.Contains(string(payload), `}data:`) {
 		t.Fatalf("Rewrite() = %q", payload)
+	}
+}
+
+// A streaming attempt that exceeds the first-byte timeout is abandoned so the
+// router can try another target. The host call is not cancelled, though: it may
+// still open a stream, and a stream nobody reads keeps burning provider tokens.
+// This pins that the abandoned stream is closed once its id finally arrives.
+func TestForwardStreamAttemptClosesStreamAbandonedByTimeout(t *testing.T) {
+	plugin := testRouterPlugin(testModelRoute("smart", routeStrategyPriority, 30, "provider-a"))
+	host := &fakeModelHost{closedCh: make(chan string, 1)}
+	released := make(chan struct{})
+	host.start = func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+		<-released
+		return pluginapi.HostModelStreamResponse{StatusCode: 200, StreamID: "late-stream"}, nil
+	}
+
+	outcome := forwardStreamAttempt(
+		pluginapi.ExecutorRequest{Model: "smart", SourceFormat: "openai"},
+		executionBody{body: []byte(`{"model":"smart"}`), entryProtocol: "openai", responseProtocol: "openai"},
+		"provider-a", "smart", "plugin-stream", host,
+		50*time.Millisecond, plugin.config, testModelRoute("smart", routeStrategyPriority, 30, "provider-a"), "provider-a",
+	)
+	if _, timedOut := outcome.err.(attemptTimeoutError); !timedOut {
+		t.Fatalf("forwardStreamAttempt() error = %v, want attemptTimeoutError", outcome.err)
+	}
+
+	// The abandoned call finally reports its stream id.
+	close(released)
+	select {
+	case streamID := <-host.closedCh:
+		if streamID != "late-stream" {
+			t.Fatalf("closed stream = %q, want %q", streamID, "late-stream")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("abandoned stream was never closed; the upstream would generate for nobody")
 	}
 }

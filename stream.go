@@ -84,19 +84,53 @@ type streamAttemptOutcome struct {
 	err             error
 }
 
+// streamStartOutcome carries the result of an asynchronous StartStream call.
+// streamID is captured separately from response so an abandoned attempt can
+// still close the upstream stream once the call finally reports it.
+type streamStartOutcome struct {
+	response pluginapi.HostModelStreamResponse
+	streamID string
+	err      error
+}
+
+// abandonedStreamGracePeriod bounds how long we wait for an abandoned
+// StartStream call to report its stream id before giving up on closing it.
+const abandonedStreamGracePeriod = 2 * time.Minute
+
+// closeAbandonedStream closes a host model stream whose attempt was already
+// abandoned because the first-byte timeout fired before StartStream returned.
+// Without this the upstream keeps generating into a stream nobody reads,
+// burning provider tokens and, on a per-token provider, money.
+func closeAbandonedStream(host modelHost, started <-chan streamStartOutcome) {
+	go func() {
+		select {
+		case result := <-started:
+			if streamID := strings.TrimSpace(result.streamID); streamID != "" {
+				_ = host.CloseStream(streamID)
+			}
+		case <-time.After(abandonedStreamGracePeriod):
+		}
+	}()
+}
+
 // forwardStreamAttempt runs one streaming attempt. The attempt timeout covers
 // only the wait for the FIRST byte: once the upstream has started answering,
 // the router no longer cuts it off, because a partial answer cannot be handed to
 // another target.
+//
+// A heartbeat runs for the whole attempt. CPA holds the response headers until
+// the first chunk arrives, so without it the client sees dead air — no headers,
+// no bytes — for the entire first-byte wait, which is what turns a slow target
+// into a client-side abort (499). The heartbeat makes CPA commit the headers and
+// start streaming immediately, so the caller's budget survives the wait.
 func forwardStreamAttempt(request pluginapi.ExecutorRequest, bodyInfo executionBody, target, requestedModel, pluginStreamID string, host modelHost, attemptTimeout time.Duration, cfg routerConfig, route modelRoute, selected string) streamAttemptOutcome {
-	type startOutcome struct {
-		response pluginapi.HostModelStreamResponse
-		err      error
-	}
-	started := make(chan startOutcome, 1)
+	heartbeat := startStreamHeartbeat(host, pluginStreamID, bodyInfo.responseProtocol)
+	defer heartbeat.Stop()
+
+	started := make(chan streamStartOutcome, 1)
 	go func() {
 		response, err := host.StartStream(hostRequest(request, bodyInfo, target, true))
-		started <- startOutcome{response: response, err: err}
+		started <- streamStartOutcome{response: response, streamID: response.StreamID, err: err}
 	}()
 
 	var response pluginapi.HostModelStreamResponse
@@ -108,6 +142,10 @@ func forwardStreamAttempt(request pluginapi.ExecutorRequest, bodyInfo executionB
 			timer.Stop()
 			response, err = result.response, result.err
 		case <-timer.C:
+			// The attempt is abandoned here, but the host call is not: it may
+			// still open a stream. Close that stream when it reports one,
+			// otherwise the provider generates for nobody.
+			closeAbandonedStream(host, started)
 			err = attemptTimeoutError{target: target, limit: attemptTimeout}
 		}
 	} else {

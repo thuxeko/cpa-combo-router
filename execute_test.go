@@ -20,6 +20,7 @@ type fakeModelHost struct {
 	startCalls   []pluginapi.HostModelExecutionRequest
 	emitted      [][]byte
 	closed       []string
+	closedCh     chan string
 }
 
 func (host *fakeModelHost) Execute(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
@@ -50,6 +51,12 @@ func (host *fakeModelHost) ReadStream(streamID string) (pluginapi.HostModelStrea
 
 func (host *fakeModelHost) CloseStream(streamID string) error {
 	host.closed = append(host.closed, streamID)
+	if host.closedCh != nil {
+		select {
+		case host.closedCh <- streamID:
+		default:
+		}
+	}
 	return nil
 }
 
