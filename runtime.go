@@ -19,6 +19,12 @@ type routeRuntime struct {
 	// jitter spreads expiry so a batch of targets does not return to rotation on
 	// the same instant.
 	jitter func(time.Duration) time.Duration
+	// providerLimits is the configured in-flight budget per provider, and
+	// providerLeases counts how many requests currently hold a slot. The budget
+	// is the provider's, not a route's: several routes that reach the same
+	// provider share one upstream account, so they must share one allowance.
+	providerLimits map[string]int
+	providerLeases map[string]int
 }
 
 type routeState struct {
@@ -39,6 +45,11 @@ type routeSelection struct {
 	model      string
 	allCooling bool
 	retryAfter time.Duration
+	// providerBlocked is set when every candidate that is not excluded sits at
+	// a provider whose in-flight budget is already spent. It is distinct from
+	// allCooling: the target is healthy, the provider is merely full, so the
+	// caller should fall back at once rather than wait out a cooldown.
+	providerBlocked bool
 }
 
 // circuitOpenAfter is how many consecutive failures make a target "open". Past
@@ -79,6 +90,109 @@ func (runtime *routeRuntime) EnableJitter() {
 	runtime.mu.Lock()
 	runtime.jitter = defaultJitter
 	runtime.mu.Unlock()
+}
+
+// SetProviderLimits installs the per-provider in-flight budget. Limits are
+// keyed by lower-case provider prefix (the part before "/" in a target).
+func (runtime *routeRuntime) SetProviderLimits(limits map[string]int) {
+	if runtime == nil {
+		return
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if len(limits) == 0 {
+		runtime.providerLimits = nil
+		return
+	}
+	copied := make(map[string]int, len(limits))
+	for name, limit := range limits {
+		copied[name] = limit
+	}
+	runtime.providerLimits = copied
+}
+
+// providerBudget reports whether a slot is free at the provider behind a
+// target, and reserves it when free. The reservation is what makes the cap
+// exact: a caller that receives true must pair it with a Release once its
+// attempt has finished. A target with no provider prefix, or a provider with no
+// configured limit, always succeeds without reserving.
+func (runtime *routeRuntime) providerBudget(model string) bool {
+	if runtime == nil {
+		return true
+	}
+	provider := providerOf(model)
+	if provider == "" {
+		return true
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.claimProviderLocked(provider)
+}
+
+// hasProviderSlotLocked reports whether provider still has room, without
+// reserving anything. The caller must already hold runtime.mu, which is what
+// lets SelectExcluding check the budget and then claim it without another
+// request slipping in between.
+func (runtime *routeRuntime) hasProviderSlotLocked(provider string) bool {
+	limit, budgeted := runtime.providerLimits[provider]
+	if !budgeted || limit < 1 {
+		return true
+	}
+	return runtime.providerLeases[provider] < limit
+}
+
+// claimProviderLocked reserves a slot for provider and reports whether one was
+// free. The caller must already hold runtime.mu.
+func (runtime *routeRuntime) claimProviderLocked(provider string) bool {
+	limit, budgeted := runtime.providerLimits[provider]
+	if !budgeted || limit < 1 {
+		return true
+	}
+	if runtime.providerLeases[provider] >= limit {
+		return false
+	}
+	if runtime.providerLeases == nil {
+		runtime.providerLeases = make(map[string]int)
+	}
+	runtime.providerLeases[provider]++
+	return true
+}
+
+// Release hands back a provider slot taken by providerBudget. A slot that was
+// never taken is a no-op, so a caller may release defensively.
+func (runtime *routeRuntime) Release(model string) {
+	if runtime == nil {
+		return
+	}
+	provider := providerOf(model)
+	if provider == "" {
+		return
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.releaseProviderLocked(provider)
+}
+
+// releaseProviderLocked returns a reserved slot. The caller must hold
+// runtime.mu.
+func (runtime *routeRuntime) releaseProviderLocked(provider string) {
+	leases := runtime.providerLeases[provider]
+	if leases <= 1 {
+		delete(runtime.providerLeases, provider)
+		return
+	}
+	runtime.providerLeases[provider] = leases - 1
+}
+
+// ProviderInFlight reports how many slots a provider currently holds. It backs
+// the management endpoint and the tests.
+func (runtime *routeRuntime) ProviderInFlight(provider string) int {
+	if runtime == nil {
+		return 0
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.providerLeases[strings.ToLower(strings.TrimSpace(provider))]
 }
 
 // defaultJitter varies a cooldown by up to ±25%. Without it, every target that
@@ -240,6 +354,7 @@ func (runtime *routeRuntime) Clone(routes []modelRoute) *routeRuntime {
 	cloned := newRouteRuntime(runtime.now)
 	cloned.persistPath = runtime.persistPath
 	cloned.jitter = runtime.jitter
+	cloned.providerLimits = runtime.providerLimits
 	for _, route := range routes {
 		key := routeKey(route.Alias)
 		signature := routeSignature(route)
@@ -306,18 +421,38 @@ func (runtime *routeRuntime) SelectExcluding(route modelRoute, excluded map[stri
 	}
 	now := runtime.now()
 	var earliest time.Time
+	// providerBlocked tracks whether at least one candidate was passed over
+	// purely because its provider was full. That is the signal for the caller
+	// to move on to the next target immediately.
+	providerBlocked := false
+	// usable reports whether a target may be attempted, reserving a provider
+	// slot when it may. A candidate that is merely cooling is not counted as
+	// provider-blocked; a healthy one whose provider is full is.
+	usable := func(model string) (bool, bool) {
+		cooling, until := state.cooling(model, now, true)
+		if cooling {
+			if earliest.IsZero() || until.Before(earliest) {
+				earliest = until
+			}
+			return false, false
+		}
+		provider := providerOf(model)
+		if !runtime.hasProviderSlotLocked(provider) {
+			return false, true
+		}
+		runtime.claimProviderLocked(provider)
+		return true, false
+	}
 	if route.Strategy != routeStrategyRoundRobin {
 		for _, target := range route.Targets {
 			model := strings.TrimSpace(target.Model)
 			if _, skip := excluded[routeKey(model)]; skip {
 				continue
 			}
-			cooling, until := state.cooling(model, now, true)
-			if !cooling {
+			if ok, blocked := usable(model); ok {
 				return routeSelection{model: model}
-			}
-			if earliest.IsZero() || until.Before(earliest) {
-				earliest = until
+			} else if blocked {
+				providerBlocked = true
 			}
 		}
 	} else {
@@ -336,13 +471,11 @@ func (runtime *routeRuntime) SelectExcluding(route modelRoute, excluded map[stri
 			target := route.Targets[index]
 			model := strings.TrimSpace(target.Model)
 			if _, skip := excluded[routeKey(model)]; !skip {
-				cooling, until := state.cooling(model, now, true)
-				if !cooling {
+				if ok, blocked := usable(model); ok {
 					state.cursor = (slot + 1) % totalWeight
 					return routeSelection{model: model}
-				}
-				if earliest.IsZero() || until.Before(earliest) {
-					earliest = until
+				} else if blocked {
+					providerBlocked = true
 				}
 			}
 			weight := int64(target.Weight)
@@ -355,7 +488,7 @@ func (runtime *routeRuntime) SelectExcluding(route modelRoute, excluded map[stri
 		}
 	}
 	if earliest.IsZero() {
-		return routeSelection{}
+		return routeSelection{providerBlocked: providerBlocked}
 	}
 	return routeSelection{allCooling: true, retryAfter: earliest.Sub(now)}
 }

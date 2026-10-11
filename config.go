@@ -24,6 +24,9 @@ const (
 	// failover. Set attempt_timeout_seconds to 0 to wait indefinitely.
 	defaultAttemptTimeoutSeconds = 45
 	maxAttemptTimeoutSeconds     = 3600
+	// maxProviderLimit bounds a configured per-provider concurrency budget so a
+	// typo cannot hand out an absurd allowance.
+	maxProviderLimit = 100_000
 )
 
 // defaultFallbackOnStatus is the status set used when fallback_on_status is not
@@ -81,6 +84,40 @@ type routerConfig struct {
 	// AttemptTimeoutSeconds caps one target attempt that has not produced a
 	// first byte yet. Zero disables the cap.
 	AttemptTimeoutSeconds int
+	// ProviderLimits caps how many requests may be in flight at each provider
+	// at once. The cap belongs to the provider, not to a route: every route
+	// that names the provider reaches it through the same upstream account.
+	ProviderLimits map[string]int
+}
+
+// providerOf returns the provider prefix of a routed target, so "ca2/kimi-k3"
+// yields "ca2". A model with no prefix has no provider and is never budgeted.
+func providerOf(model string) string {
+	model = strings.TrimSpace(model)
+	index := strings.IndexByte(model, '/')
+	if index <= 0 {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(model[:index]))
+}
+
+// normalizeProviderLimits validates the per-provider concurrency budgets.
+func normalizeProviderLimits(raw *map[string]int) (map[string]int, error) {
+	if raw == nil || len(*raw) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]int, len(*raw))
+	for name, limit := range *raw {
+		key := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), "/")
+		if key == "" {
+			return nil, errors.New("provider_limits: tên provider không được để trống")
+		}
+		if limit < 1 || limit > maxProviderLimit {
+			return nil, fmt.Errorf("provider_limits[%s]: giới hạn phải trong khoảng 1 đến %d", key, maxProviderLimit)
+		}
+		out[key] = limit
+	}
+	return out, nil
 }
 
 // fallbackPolicy resolves the configured status lists into lookup sets. An
@@ -110,6 +147,9 @@ type routerConfigYAML struct {
 	Fallback       *fallbackConfigYAML `yaml:"fallback,omitempty"`
 	ErrorPolicy    *errorPolicyYAML    `yaml:"error_policy,omitempty"`
 	AttemptTimeout *int                `yaml:"attempt_timeout_seconds,omitempty"`
+	// ProviderLimits maps a provider prefix to the number of requests that may
+	// be in flight against it at once (e.g. {"ca2": 5}).
+	ProviderLimits *map[string]int `yaml:"provider_limits,omitempty"`
 }
 
 func decodeRouterConfig(raw []byte) (routerConfig, error) {
@@ -230,6 +270,10 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 	if attemptTimeout < 0 || attemptTimeout > maxAttemptTimeoutSeconds {
 		return routerConfig{}, fmt.Errorf("attempt_timeout_seconds phải nằm trong khoảng 0 đến %d", maxAttemptTimeoutSeconds)
 	}
+	providerLimits, err := normalizeProviderLimits(wire.ProviderLimits)
+	if err != nil {
+		return routerConfig{}, err
+	}
 	return routerConfig{
 		Enabled:               enabled,
 		StatePath:             absoluteStatePath,
@@ -239,6 +283,7 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 		ErrorPolicy:           policy,
 		ErrorPolicyConfigured: errorPolicyConfigured,
 		AttemptTimeoutSeconds: attemptTimeout,
+		ProviderLimits:        providerLimits,
 	}, nil
 }
 

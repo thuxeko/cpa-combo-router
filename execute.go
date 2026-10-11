@@ -67,11 +67,20 @@ func (p *comboRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 			return pluginapi.ExecutorResponse{}, cooldownRouteError(route, selection.retryAfter)
 		}
 		if selection.model == "" {
+			// A candidate that was passed over only because its provider was
+			// full is not a sick target: report it as a capacity limit rather
+			// than as a route with nothing left.
+			if selection.providerBlocked {
+				return pluginapi.ExecutorResponse{}, providerBusyError(route)
+			}
 			break
 		}
 		attempted[routeKey(selection.model)] = struct{}{}
 		target := targetModel(requestedModel, selection.model)
 		response, err := executeWithAttemptTimeout(host, hostRequest(request, bodyInfo, target, false), attemptTimeout)
+		// The provider slot is held only for the attempt itself: the response
+		// is already in hand, so the upstream is no longer occupied.
+		p.runtime.Release(selection.model)
 		status := response.StatusCode
 		if status == 0 && err == nil {
 			status = http.StatusOK
@@ -148,4 +157,12 @@ func cooldownRouteError(route modelRoute, retryAfter time.Duration) error {
 		seconds = 1
 	}
 	return newRouteError(http.StatusTooManyRequests, "model_route_cooldown", route.Alias, fmt.Sprintf("all candidates for model route %q are cooling down", route.Alias), fmt.Sprintf("retry after %d seconds", seconds))
+}
+
+// providerBusyError reports that every remaining candidate sits at a provider
+// whose in-flight budget is spent. It is distinct from a cooldown: the targets
+// are healthy, the upstream account is simply full, so the caller should retry
+// shortly rather than treat the route as broken.
+func providerBusyError(route modelRoute) error {
+	return newRouteError(http.StatusTooManyRequests, "provider_inflight_limit", route.Alias, fmt.Sprintf("all candidates for model route %q are at a provider that reached its in-flight limit", route.Alias), "retry shortly")
 }

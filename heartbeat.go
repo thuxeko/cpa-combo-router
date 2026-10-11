@@ -19,7 +19,15 @@ import (
 //
 // Emitting a no-op frame from the plugin forces CPA to commit the headers and
 // start streaming, which is what keeps that budget from expiring.
-const heartbeatIntervalDefault = 5 * time.Second
+//
+// Cadence: 10 s, matching the peer router BSL-Router's tools.sse_keepalive
+// default and CPA's own requests.streaming.keepalive-seconds (10). The earlier
+// 5 s was twice as chatty as either; every tick costs a write + flush on a
+// two-core host, so the thinner cadence is the deliberate choice. The client
+// watchdog this must beat is 30 s of silence (Claude Code aborts with "Slow
+// first byte: no stream chunk 30.0s after request sent"), so 10 s keeps a 3x
+// margin without the extra chatter.
+const heartbeatIntervalDefault = 10 * time.Second
 
 // streamHeartbeatInterval is the live cadence. It is a variable so tests can
 // drive it down instead of waiting seconds for a frame.

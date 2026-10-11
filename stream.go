@@ -49,11 +49,17 @@ func (p *comboRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 			return cooldownRouteError(route, selection.retryAfter)
 		}
 		if selection.model == "" {
+			if selection.providerBlocked {
+				return providerBusyError(route)
+			}
 			break
 		}
 		attempted[routeKey(selection.model)] = struct{}{}
 		target := targetModel(requestedModel, selection.model)
 		outcome := forwardStreamAttempt(request, bodyInfo, target, requestedModel, pluginStreamID, host, attemptTimeout, p.config, route, selection.model)
+		// The stream is fully consumed by the time this returns, so the
+		// provider is no longer occupied and its slot goes back.
+		p.runtime.Release(selection.model)
 		if outcome.err == nil {
 			p.runtime.MarkSuccess(route, selection.model)
 			return nil

@@ -57,6 +57,9 @@ func newComboRouterPlugin(configYAML []byte, previous *comboRouterPlugin) (*comb
 	// Live traffic gets jitter; tests build the runtime directly and stay
 	// deterministic.
 	runtime.EnableJitter()
+	// The per-provider in-flight budget belongs to the upstream account, so it
+	// is applied after Clone: editing a route must not silently drop it.
+	runtime.SetProviderLimits(cfg.ProviderLimits)
 	plugin := &comboRouterPlugin{config: cfg, runtime: runtime}
 	metadata := pluginapi.Metadata{
 		Name:             pluginName,
@@ -67,6 +70,7 @@ func newComboRouterPlugin(configYAML []byte, previous *comboRouterPlugin) (*comb
 			{Name: "routes", Type: pluginapi.ConfigFieldTypeArray, Description: "Logical model aliases backed by priority or weighted round-robin target pools."},
 			{Name: "error_policy", Type: pluginapi.ConfigFieldTypeObject, Description: "What to do for each failure status: action (fallback, stop, fallback_no_penalty), cooldown_seconds, max_cooldown_seconds, honor_retry_after, backoff."},
 			{Name: "attempt_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "How long one target attempt may wait for its first byte before the router tries the next target (0 disables the cap)."},
+			{Name: "provider_limits", Type: pluginapi.ConfigFieldTypeObject, Description: "In-flight cap per provider prefix shared by every route that reaches it, e.g. {ca2: 5}: a request over the cap falls through to the next target instead of being sent upstream."},
 			{Name: "fallback", Type: pluginapi.ConfigFieldTypeObject, Description: "Legacy status lists kept for compatibility: fallback_on_status, no_fallback_on_status."},
 			{Name: "state_path", Type: pluginapi.ConfigFieldTypeString, Description: "Where live cooldown state is persisted across restarts; defaults to combo-router-state.json in the CPA plugins directory."},
 		},
