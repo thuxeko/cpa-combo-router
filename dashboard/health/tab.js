@@ -3,7 +3,7 @@
 // configuration tab holds unsaved edits, and never writes back.
 const HEALTH_URL='/v0/resource/plugins/combo-router/health';
 const HEALTH_POLL_MS=10000;
-const healthPanelEl=document.getElementById('health-panel');
+// healthPanelEl is declared in shared.js (the shared element registry).
 const healthStatusEl=document.getElementById('health-status');
 const healthRoutesEl=document.getElementById('health-routes');
 const healthEmptyEl=document.getElementById('health-empty');
