@@ -15,7 +15,7 @@ import (
 
 const (
 	comboRouterDashboardPath  = "/v0/resource/plugins/" + pluginID + "/config"
-	comboRouterHealthPath     = "/v0/resource/plugins/" + pluginID + "/health"
+	comboRouterHealthPath     = "/v0/management/plugins/" + pluginID + "/health"
 	comboRouterValidationPath = "/v0/management/plugins/" + pluginID + "/validate"
 	maxManagementRequestBytes = 1 << 20
 )
@@ -62,19 +62,16 @@ func modelRouterManagementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
 			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/validate", Description: "Validate Combo Router configuration before saving it."},
+			// Health is consumed by the in-dashboard Sức khỏe tab, so it is an
+			// API route (no menu entry), NOT a resource: a resource would make
+			// CPAMC render a second plugin page that duplicates the tab.
+			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/health", Description: "Live per-target health snapshot (JSON)."},
 		},
-		Resources: []resourceRoute{
-			{
-				Path:        "/config",
-				Menu:        "Combo Router",
-				Description: "Configure logical aliases and ordered model target pools.",
-			},
-			{
-				Path:        "/health",
-				Menu:        "Sức khỏe",
-				Description: "Live per-target health snapshot (JSON).",
-			},
-		},
+		Resources: []resourceRoute{{
+			Path:        "/config",
+			Menu:        "Combo Router",
+			Description: "Configure logical aliases and ordered model target pools.",
+		}},
 	}
 }
 

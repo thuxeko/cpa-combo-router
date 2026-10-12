@@ -36,6 +36,7 @@ func TestModelRouterABIAdvertisesConfigurationResource(t *testing.T) {
 	}
 	wantedRoutes := map[string]bool{
 		http.MethodPost + " /plugins/combo-router/validate": false,
+		http.MethodGet + " /plugins/combo-router/health":    false,
 	}
 	for _, route := range management.Routes {
 		key := route.Method + " " + route.Path
@@ -48,7 +49,11 @@ func TestModelRouterABIAdvertisesConfigurationResource(t *testing.T) {
 			t.Fatalf("management routes missing %s: %#v", route, management.Routes)
 		}
 	}
-	if len(management.Routes) != 1 {
+	// Exactly the two API routes: validate (POST) and health (GET). No usage
+	// routes — the fork leaves analytics to the usage-statistics plugin. Health
+	// is deliberately a route, NOT a resource, so CPAMC does not render a
+	// second plugin page that duplicates the in-dashboard Sức khỏe tab.
+	if len(management.Routes) != 2 {
 		t.Fatalf("the fork advertises no usage routes, got %#v", management.Routes)
 	}
 }

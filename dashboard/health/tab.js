@@ -1,7 +1,7 @@
 // The live health panel reads the /health endpoint the Go side exposes. It is
 // strictly read-only: it shows the runtime as it is, even while the
 // configuration tab holds unsaved edits, and never writes back.
-const HEALTH_URL='/v0/resource/plugins/combo-router/health';
+const HEALTH_URL='/v0/management/plugins/combo-router/health';
 const HEALTH_POLL_MS=10000;
 // healthPanelEl is declared in shared.js (the shared element registry).
 const healthStatusEl=document.getElementById('health-status');
