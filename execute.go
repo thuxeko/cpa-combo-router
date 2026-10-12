@@ -59,9 +59,17 @@ func (p *comboRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 	bodyInfo := bodyForExecution(request)
 	cfg := p.config
 	attemptTimeout := time.Duration(cfg.AttemptTimeoutSeconds) * time.Second
+	budget := newRetryBudget(cfg.RetryDeadlineSeconds)
+	backoff := time.Duration(cfg.RetryBackoffSeconds) * time.Second
 	var lastErr error
 	attempted := make(map[string]struct{}, len(route.Targets))
 	for attempt := 0; attempt < len(route.Targets); attempt++ {
+		// The retry budget covers the whole request, so it can run out while
+		// targets remain. Starting another attempt with a sliver of budget
+		// would only produce a timeout, so stop and report what is known.
+		if budget.exhaustedForAttempt() {
+			break
+		}
 		selection := p.runtime.SelectExcluding(route, attempted)
 		if selection.allCooling {
 			return pluginapi.ExecutorResponse{}, cooldownRouteError(route, selection.retryAfter)
@@ -77,37 +85,60 @@ func (p *comboRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 		}
 		attempted[routeKey(selection.model)] = struct{}{}
 		target := targetModel(requestedModel, selection.model)
-		response, err := executeWithAttemptTimeout(host, hostRequest(request, bodyInfo, target, false), attemptTimeout)
-		// The provider slot is held only for the attempt itself: the response
-		// is already in hand, so the upstream is no longer occupied.
+
+		// Retry the SAME target before moving on. A provider that answered
+		// "busy" a moment ago is usually ready a second later, and treating
+		// that as a dead target is what cools a healthy route.
+		//
+		// The provider slot stays claimed for the whole retry sequence. That is
+		// deliberate: the slot represents load we are sending upstream, and
+		// retrying is still sending to that provider. Releasing between
+		// attempts would let other requests take the freed capacity and push
+		// the busy provider further over its limit.
+		var (
+			response pluginapi.HostModelExecutionResponse
+			err      error
+			outcome  policyOutcome
+		)
+		for retriesUsed := 0; ; retriesUsed++ {
+			response, err = executeWithAttemptTimeout(host, hostRequest(request, bodyInfo, target, false), budget.attemptLimit(attemptTimeout))
+			status := response.StatusCode
+			if status == 0 && err == nil {
+				status = http.StatusOK
+			}
+			if status == 0 && err != nil {
+				status = statusFromError(err)
+			}
+			if err == nil && status >= 200 && status < 300 {
+				p.runtime.Release(selection.model)
+				p.runtime.MarkSuccess(route, selection.model)
+				return pluginapi.ExecutorResponse{
+					Payload: rewriteResponseModel(response.Body, requestedModel),
+					Headers: cloneHeader(response.Headers),
+					Metadata: map[string]any{
+						"route_alias":    route.Alias,
+						"selected_model": target,
+						"selected_index": attempt,
+					},
+				}, nil
+			}
+			if err == nil {
+				err = statusError{status: status, message: hostStatusMessage(target, status, response.Body)}
+			}
+			// The upstream's own Retry-After is more accurate than any
+			// configured number, so it is read here and handed to the policy.
+			retryAfter := parseRetryAfter(response.Headers)
+			consecutive := p.runtime.FailureCount(route, selection.model) + 1
+			outcome = decideAttempt(err, cfg, route, selection.model, retryAfter, consecutive)
+			if !shouldRetry(cfg, outcome, retriesUsed, budget) {
+				break
+			}
+			if pause := budget.pauseFor(backoff, retryAfter); pause > 0 {
+				time.Sleep(pause)
+			}
+		}
+		// The retry sequence is over for this target, so its slot goes back.
 		p.runtime.Release(selection.model)
-		status := response.StatusCode
-		if status == 0 && err == nil {
-			status = http.StatusOK
-		}
-		if status == 0 && err != nil {
-			status = statusFromError(err)
-		}
-		if err == nil && status >= 200 && status < 300 {
-			p.runtime.MarkSuccess(route, selection.model)
-			return pluginapi.ExecutorResponse{
-				Payload: rewriteResponseModel(response.Body, requestedModel),
-				Headers: cloneHeader(response.Headers),
-				Metadata: map[string]any{
-					"route_alias":    route.Alias,
-					"selected_model": target,
-					"selected_index": attempt,
-				},
-			}, nil
-		}
-		if err == nil {
-			err = statusError{status: status, message: hostStatusMessage(target, status, response.Body)}
-		}
-		// The upstream's own Retry-After is more accurate than any configured
-		// number, so it is read here and handed to the policy.
-		retryAfter := parseRetryAfter(response.Headers)
-		consecutive := p.runtime.FailureCount(route, selection.model) + 1
-		outcome := decideAttempt(err, cfg, route, selection.model, retryAfter, consecutive)
 		if !outcome.shouldFallback() {
 			p.runtime.ReleaseProbe(route, selection.model)
 			return pluginapi.ExecutorResponse{}, err

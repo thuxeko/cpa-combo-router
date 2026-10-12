@@ -40,10 +40,24 @@ func (p *comboRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 	}
 	requestedModel := strings.TrimSpace(request.Model)
 	bodyInfo := bodyForExecution(request)
-	attemptTimeout := time.Duration(p.config.AttemptTimeoutSeconds) * time.Second
+	cfg := p.config
+	attemptTimeout := time.Duration(cfg.AttemptTimeoutSeconds) * time.Second
+	budget := newRetryBudget(cfg.RetryDeadlineSeconds)
+	backoff := time.Duration(cfg.RetryBackoffSeconds) * time.Second
+
+	// One heartbeat covers the whole request, retries included. CPA holds the
+	// response headers until the first chunk arrives, so every silent wait —
+	// each attempt AND each pause between them — would otherwise be dead air
+	// that the client's own timeout can expire.
+	heartbeat := startStreamHeartbeat(host, pluginStreamID, bodyInfo.responseProtocol)
+	defer heartbeat.Stop()
+
 	var lastErr error
 	attempted := make(map[string]struct{}, len(route.Targets))
 	for attempt := 0; attempt < len(route.Targets); attempt++ {
+		if budget.exhaustedForAttempt() {
+			break
+		}
 		selection := p.runtime.SelectExcluding(route, attempted)
 		if selection.allCooling {
 			return cooldownRouteError(route, selection.retryAfter)
@@ -56,7 +70,29 @@ func (p *comboRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 		}
 		attempted[routeKey(selection.model)] = struct{}{}
 		target := targetModel(requestedModel, selection.model)
-		outcome := forwardStreamAttempt(request, bodyInfo, target, requestedModel, pluginStreamID, host, attemptTimeout, p.config, route, selection.model)
+
+		// Retry the same target before moving on, for the same reason the
+		// buffered path does: one "busy" answer does not make a dead target.
+		// The slot is held across the retries, since every retry still sends
+		// load to that provider.
+		var outcome streamAttemptOutcome
+		for retriesUsed := 0; ; retriesUsed++ {
+			outcome = forwardStreamAttempt(request, bodyInfo, target, requestedModel, pluginStreamID, host, budget.attemptLimit(attemptTimeout), cfg, route, selection.model)
+			if outcome.err == nil {
+				break
+			}
+			// A stream that already emitted a payload cannot be spliced onto
+			// another attempt: the caller has seen the beginning of one answer.
+			if outcome.receivedPayload {
+				break
+			}
+			if !shouldRetry(cfg, outcome.decision, retriesUsed, budget) {
+				break
+			}
+			if pause := budget.pauseFor(backoff, 0); pause > 0 {
+				time.Sleep(pause)
+			}
+		}
 		// The stream is fully consumed by the time this returns, so the
 		// provider is no longer occupied and its slot goes back.
 		p.runtime.Release(selection.model)
@@ -64,8 +100,6 @@ func (p *comboRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 			p.runtime.MarkSuccess(route, selection.model)
 			return nil
 		}
-		// A stream that already emitted a payload cannot be spliced onto another
-		// target: the caller has seen the beginning of one answer.
 		if outcome.receivedPayload || !outcome.decision.shouldFallback() {
 			p.runtime.ReleaseProbe(route, selection.model)
 			return outcome.err
@@ -124,15 +158,10 @@ func closeAbandonedStream(host modelHost, started <-chan streamStartOutcome) {
 // the router no longer cuts it off, because a partial answer cannot be handed to
 // another target.
 //
-// A heartbeat runs for the whole attempt. CPA holds the response headers until
-// the first chunk arrives, so without it the client sees dead air — no headers,
-// no bytes — for the entire first-byte wait, which is what turns a slow target
-// into a client-side abort (499). The heartbeat makes CPA commit the headers and
-// start streaming immediately, so the caller's budget survives the wait.
+// The keep-alive heartbeat is NOT started here — the caller owns it, because it
+// must also cover the pauses between retries at the same target. Starting one
+// per attempt would emit duplicate frames and leave the pauses silent.
 func forwardStreamAttempt(request pluginapi.ExecutorRequest, bodyInfo executionBody, target, requestedModel, pluginStreamID string, host modelHost, attemptTimeout time.Duration, cfg routerConfig, route modelRoute, selected string) streamAttemptOutcome {
-	heartbeat := startStreamHeartbeat(host, pluginStreamID, bodyInfo.responseProtocol)
-	defer heartbeat.Stop()
-
 	started := make(chan streamStartOutcome, 1)
 	go func() {
 		response, err := host.StartStream(hostRequest(request, bodyInfo, target, true))

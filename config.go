@@ -88,6 +88,15 @@ type routerConfig struct {
 	// at once. The cap belongs to the provider, not to a route: every route
 	// that names the provider reaches it through the same upstream account.
 	ProviderLimits map[string]int
+	// AttemptRetries is how many extra attempts a single target gets before the
+	// router moves to the next one. Zero keeps the original behaviour of one
+	// attempt per target.
+	AttemptRetries int
+	// RetryBackoffSeconds is the pause between attempts at the same target.
+	RetryBackoffSeconds int
+	// RetryDeadlineSeconds bounds the total retry time for one request. Zero
+	// means "no bound".
+	RetryDeadlineSeconds int
 }
 
 // providerOf returns the provider prefix of a routed target, so "ca2/kimi-k3"
@@ -150,6 +159,13 @@ type routerConfigYAML struct {
 	// ProviderLimits maps a provider prefix to the number of requests that may
 	// be in flight against it at once (e.g. {"ca2": 5}).
 	ProviderLimits *map[string]int `yaml:"provider_limits,omitempty"`
+	// AttemptRetries is how many extra attempts one target gets before the
+	// router moves on. 0 (the default) means a single attempt per target.
+	AttemptRetries *int `yaml:"attempt_retries,omitempty"`
+	// RetryBackoffSeconds is the pause between two attempts at the same target.
+	RetryBackoffSeconds *int `yaml:"retry_backoff_seconds,omitempty"`
+	// RetryDeadlineSeconds bounds the total retry time of one request.
+	RetryDeadlineSeconds *int `yaml:"retry_deadline_seconds,omitempty"`
 }
 
 func decodeRouterConfig(raw []byte) (routerConfig, error) {
@@ -274,6 +290,27 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 	if err != nil {
 		return routerConfig{}, err
 	}
+	attemptRetries := 0
+	if wire.AttemptRetries != nil {
+		attemptRetries = *wire.AttemptRetries
+	}
+	if attemptRetries < 0 || attemptRetries > maxRetryCount {
+		return routerConfig{}, fmt.Errorf("attempt_retries phải nằm trong khoảng 0 đến %d", maxRetryCount)
+	}
+	retryBackoff := defaultRetryBackoffSeconds
+	if wire.RetryBackoffSeconds != nil {
+		retryBackoff = *wire.RetryBackoffSeconds
+	}
+	if retryBackoff < 0 || retryBackoff > maxRetryBackoffSeconds {
+		return routerConfig{}, fmt.Errorf("retry_backoff_seconds phải nằm trong khoảng 0 đến %d", maxRetryBackoffSeconds)
+	}
+	retryDeadline := defaultRetryDeadlineSeconds
+	if wire.RetryDeadlineSeconds != nil {
+		retryDeadline = *wire.RetryDeadlineSeconds
+	}
+	if retryDeadline < 0 || retryDeadline > maxRetryDeadlineSeconds {
+		return routerConfig{}, fmt.Errorf("retry_deadline_seconds phải nằm trong khoảng 0 đến %d", maxRetryDeadlineSeconds)
+	}
 	return routerConfig{
 		Enabled:               enabled,
 		StatePath:             absoluteStatePath,
@@ -284,6 +321,9 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 		ErrorPolicyConfigured: errorPolicyConfigured,
 		AttemptTimeoutSeconds: attemptTimeout,
 		ProviderLimits:        providerLimits,
+		AttemptRetries:        attemptRetries,
+		RetryBackoffSeconds:   retryBackoff,
+		RetryDeadlineSeconds:  retryDeadline,
 	}, nil
 }
 

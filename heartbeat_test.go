@@ -166,12 +166,21 @@ func TestStreamHeartbeatSkipsWhenUnusable(t *testing.T) {
 // test for the dead-air bug: the target never produces a first byte, and the
 // attempt must still emit frames so CPA commits the headers instead of leaving
 // the client with nothing until its budget expires.
+//
+// The heartbeat now belongs to the caller (executeStreamWithHost), which owns it
+// across retries and the pauses between them. This test drives that ownership
+// directly: it starts the heartbeat the same way the caller does, runs the
+// attempt, and asserts frames were emitted during the silent wait.
 func TestForwardStreamAttemptHeartbeatsWhileWaitingForFirstByte(t *testing.T) {
 	previous := streamHeartbeatInterval
 	streamHeartbeatInterval = 5 * time.Millisecond
 	defer func() { streamHeartbeatInterval = previous }()
 
 	host := &heartbeatHost{}
+
+	// Same call the streaming path makes: one heartbeat for the whole request.
+	heartbeat := startStreamHeartbeat(host, "plugin-stream-1", "openai")
+	defer heartbeat.Stop()
 
 	done := make(chan streamAttemptOutcome, 1)
 	go func() {
