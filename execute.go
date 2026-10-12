@@ -130,7 +130,7 @@ func (p *comboRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 			retryAfter := parseRetryAfter(response.Headers)
 			consecutive := p.runtime.FailureCount(route, selection.model) + 1
 			outcome = decideAttempt(err, cfg, route, selection.model, retryAfter, consecutive)
-			if !shouldRetry(cfg, outcome, retriesUsed, budget) {
+			if !shouldRetry(cfg, err, outcome, retriesUsed, budget) {
 				break
 			}
 			if pause := budget.pauseFor(backoff, retryAfter); pause > 0 {

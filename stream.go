@@ -86,7 +86,7 @@ func (p *comboRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 			if outcome.receivedPayload {
 				break
 			}
-			if !shouldRetry(cfg, outcome.decision, retriesUsed, budget) {
+			if !shouldRetry(cfg, outcome.err, outcome.decision, retriesUsed, budget) {
 				break
 			}
 			if pause := budget.pauseFor(backoff, 0); pause > 0 {

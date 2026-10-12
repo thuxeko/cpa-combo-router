@@ -113,12 +113,22 @@ func (budget retryBudget) attemptLimit(attemptTimeout time.Duration) time.Durati
 	return attemptTimeout
 }
 
-// shouldRetry reports whether the SAME target deserves another attempt. A
-// failure another attempt could survive is retried while attempts and budget
-// remain; a failure the request itself caused (a `stop` decision) never is,
+// shouldRetry reports whether the SAME target deserves another attempt.
+//
+// Retrying is for a provider that answered quickly with "busy" (429, 502,
+// 503): those clear in a second and the retry is what keeps a healthy target
+// from being cooled. It is NOT for an attempt that timed out — a target that
+// produced no first byte for the whole attempt window is the "genuinely dead"
+// case, and retrying it only doubles the caller's wait before the router moves
+// to a target that might actually answer.
+//
+// A failure the request itself caused (a `stop` decision) is never retried,
 // because no number of retries fixes a malformed request.
-func shouldRetry(cfg routerConfig, decision policyOutcome, retriesUsed int, budget retryBudget) bool {
+func shouldRetry(cfg routerConfig, err error, decision policyOutcome, retriesUsed int, budget retryBudget) bool {
 	if !decision.shouldFallback() {
+		return false
+	}
+	if _, timedOut := err.(attemptTimeoutError); timedOut {
 		return false
 	}
 	if retriesUsed >= cfg.AttemptRetries {

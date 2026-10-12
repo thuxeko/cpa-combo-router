@@ -261,6 +261,56 @@ func TestRetryBudgetArithmetic(t *testing.T) {
 	}
 }
 
+// TestRetryDoesNotRetryATimedOutTarget: a target that produced no first byte for
+// the whole attempt window is the genuinely dead case. Retrying it would double
+// the caller's wait before reaching a target that might actually answer, so the
+// router must move on after the FIRST timeout.
+func TestRetryDoesNotRetryATimedOutTarget(t *testing.T) {
+	plugin := retryPlugin(t, `
+routes:
+  - alias: smart
+    cooldown_seconds: 30
+    strategy: priority
+    targets:
+      - model: ca2/m1
+        weight: 1
+      - model: vsl/m1
+        weight: 1
+attempt_retries: 3
+retry_backoff_seconds: 0
+retry_deadline_seconds: 90
+`)
+	// The fake host blocks past the attempt cap so the attempt times out.
+	host := &fakeModelHost{execute: func(request pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		if request.Model == "ca2/m1" {
+			// Longer than the 1s attempt cap, so this attempt times out.
+			time.Sleep(1200 * time.Millisecond)
+			return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"model":"smart"}`)}, nil
+		}
+		return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"model":"smart"}`)}, nil
+	}}
+	// A 1-second attempt cap makes the sleeping ca2 attempt time out while vsl
+	// answers immediately.
+	plugin.config.AttemptTimeoutSeconds = 1
+	start := time.Now()
+	response, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
+	if err != nil {
+		t.Fatalf("executeWithHost() error = %v", err)
+	}
+	if len(response.Payload) == 0 {
+		t.Fatal("executeWithHost() returned an empty payload; vsl should have answered")
+	}
+	if len(host.executeCalls) != 2 {
+		t.Fatalf("host called %d times, want 2 (one timeout at ca2, then vsl — no retry)", len(host.executeCalls))
+	}
+	if host.executeCalls[1].Model != "vsl/m1" {
+		t.Fatalf("second call went to %q, want vsl/m1", host.executeCalls[1].Model)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("executeWithHost() took %v; a timeout must not be retried", elapsed)
+	}
+}
+
 // TestShouldRetryRules pins the decision table.
 func TestShouldRetryRules(t *testing.T) {
 	cfg := routerConfig{AttemptRetries: 3}
@@ -268,23 +318,30 @@ func TestShouldRetryRules(t *testing.T) {
 	noPenalty := policyOutcome{Action: errorActionFallbackNoPenalty}
 	stop := policyOutcome{Action: errorActionStop}
 	budget := newRetryBudget(90)
+	busy := statusError{status: http.StatusBadGateway, message: "overloaded"}
+	timedOut := attemptTimeoutError{target: "ca2/m1", limit: time.Minute}
 
-	if !shouldRetry(cfg, fallback, 0, budget) {
-		t.Fatal("a fallback failure with retries left must be retried")
+	if !shouldRetry(cfg, busy, fallback, 0, budget) {
+		t.Fatal("a busy answer with retries left must be retried")
 	}
-	if !shouldRetry(cfg, noPenalty, 2, budget) {
-		t.Fatal("a no-penalty failure with retries left must be retried")
+	if !shouldRetry(cfg, busy, noPenalty, 2, budget) {
+		t.Fatal("a no-penalty busy answer with retries left must be retried")
 	}
-	if shouldRetry(cfg, stop, 0, budget) {
+	if shouldRetry(cfg, busy, stop, 0, budget) {
 		t.Fatal("a stop decision must never be retried")
 	}
-	if shouldRetry(cfg, fallback, 3, budget) {
+	if shouldRetry(cfg, busy, fallback, 3, budget) {
 		t.Fatal("a failure with no retries left must not be retried")
 	}
-	if shouldRetry(routerConfig{AttemptRetries: 0}, fallback, 0, budget) {
+	if shouldRetry(routerConfig{AttemptRetries: 0}, busy, fallback, 0, budget) {
 		t.Fatal("attempt_retries=0 must disable retrying entirely")
 	}
-	if shouldRetry(cfg, fallback, 0, newRetryBudget(-1)) == false {
+	if !shouldRetry(cfg, busy, fallback, 0, newRetryBudget(-1)) {
 		t.Fatal("a disabled budget must not block retrying")
+	}
+	// A target that never produced a first byte is the genuinely dead case:
+	// retrying it only doubles the caller's wait.
+	if shouldRetry(cfg, timedOut, fallback, 0, budget) {
+		t.Fatal("a first-byte timeout must not be retried at the same target")
 	}
 }
