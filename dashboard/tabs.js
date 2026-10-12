@@ -3,7 +3,8 @@
 function tabPanelPairs(){
   return [
     {tab:document.getElementById('configuration-tab'),panel:configurationPanelEl},
-    {tab:document.getElementById('policy-tab'),panel:policyPanelEl}
+    {tab:document.getElementById('policy-tab'),panel:policyPanelEl},
+    {tab:document.getElementById('health-tab'),panel:healthPanelEl}
   ];
 }
 function activateTab(name,moveFocus=false){

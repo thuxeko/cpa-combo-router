@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
@@ -14,6 +15,7 @@ import (
 
 const (
 	comboRouterDashboardPath  = "/v0/resource/plugins/" + pluginID + "/config"
+	comboRouterHealthPath     = "/v0/resource/plugins/" + pluginID + "/health"
 	comboRouterValidationPath = "/v0/management/plugins/" + pluginID + "/validate"
 	maxManagementRequestBytes = 1 << 20
 )
@@ -46,12 +48,14 @@ type resourceRoute struct {
 // validates is exactly what it saves. Adding a field to the dashboard payload
 // without adding it here turns every save into a 400 (DisallowUnknownFields).
 type modelRouterValidationRequest struct {
-	Enabled               *bool            `json:"enabled"`
-	Priority              *int             `json:"priority,omitempty"`
-	Routes                []modelRouteYAML `json:"routes"`
-	LegacyRoutes          json.RawMessage  `json:"model-routes,omitempty"`
-	ErrorPolicy           *errorPolicyYAML `json:"error_policy,omitempty"`
-	AttemptTimeoutSeconds *int             `json:"attempt_timeout_seconds,omitempty"`
+	Enabled                       *bool            `json:"enabled"`
+	Priority                      *int             `json:"priority,omitempty"`
+	Routes                        []modelRouteYAML `json:"routes"`
+	LegacyRoutes                  json.RawMessage  `json:"model-routes,omitempty"`
+	ErrorPolicy                   *errorPolicyYAML `json:"error_policy,omitempty"`
+	AttemptTimeoutSeconds         *int             `json:"attempt_timeout_seconds,omitempty"`
+	HealthWindowSeconds           *int             `json:"health_window_seconds,omitempty"`
+	DegradedAttemptTimeoutSeconds *int             `json:"degraded_attempt_timeout_seconds,omitempty"`
 }
 
 func modelRouterManagementRegistration() managementRegistrationResponse {
@@ -59,11 +63,18 @@ func modelRouterManagementRegistration() managementRegistrationResponse {
 		Routes: []managementRoute{
 			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/validate", Description: "Validate Combo Router configuration before saving it."},
 		},
-		Resources: []resourceRoute{{
-			Path:        "/config",
-			Menu:        "Combo Router",
-			Description: "Configure logical aliases and ordered model target pools.",
-		}},
+		Resources: []resourceRoute{
+			{
+				Path:        "/config",
+				Menu:        "Combo Router",
+				Description: "Configure logical aliases and ordered model target pools.",
+			},
+			{
+				Path:        "/health",
+				Menu:        "Sức khỏe",
+				Description: "Live per-target health snapshot (JSON).",
+			},
+		},
 	}
 }
 
@@ -93,6 +104,30 @@ func handleModelRouterManagement(plugin *comboRouterPlugin, request pluginapi.Ma
 				"X-Content-Type-Options":  {"nosniff"},
 			},
 			Body: append([]byte(nil), configDashboardHTML...),
+		}
+	case comboRouterHealthPath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return modelRouterJSONResponse(http.StatusMethodNotAllowed, map[string]any{
+				"error":   "method_not_allowed",
+				"message": "health only supports GET",
+			})
+		}
+		snapshot := plugin.runtime.HealthSnapshot(time.Time{})
+		body, err := json.Marshal(snapshot)
+		if err != nil {
+			return modelRouterJSONResponse(http.StatusInternalServerError, map[string]any{
+				"error":   "health_encode_failed",
+				"message": err.Error(),
+			})
+		}
+		return pluginapi.ManagementResponse{
+			StatusCode: http.StatusOK,
+			Headers: http.Header{
+				"Content-Type":           {"application/json; charset=utf-8"},
+				"Cache-Control":          {"no-store"},
+				"X-Content-Type-Options": {"nosniff"},
+			},
+			Body: body,
 		}
 	case comboRouterValidationPath:
 		if !strings.EqualFold(request.Method, http.MethodPost) {
@@ -160,13 +195,15 @@ func validateModelRouterManagementConfig(body []byte) pluginapi.ManagementRespon
 		priority = *request.Priority
 	}
 	wire := struct {
-		Enabled               bool              `yaml:"enabled"`
-		Priority              int               `yaml:"priority,omitempty"`
-		Routes                []modelRouteYAML  `yaml:"routes"`
-		LegacyRoutes          *[]modelRouteYAML `yaml:"model-routes,omitempty"`
-		ErrorPolicy           *errorPolicyYAML  `yaml:"error_policy,omitempty"`
-		AttemptTimeoutSeconds *int              `yaml:"attempt_timeout_seconds,omitempty"`
-	}{Enabled: enabled, Priority: priority, Routes: request.Routes, LegacyRoutes: legacyRoutes, ErrorPolicy: request.ErrorPolicy, AttemptTimeoutSeconds: request.AttemptTimeoutSeconds}
+		Enabled                       bool              `yaml:"enabled"`
+		Priority                      int               `yaml:"priority,omitempty"`
+		Routes                        []modelRouteYAML  `yaml:"routes"`
+		LegacyRoutes                  *[]modelRouteYAML `yaml:"model-routes,omitempty"`
+		ErrorPolicy                   *errorPolicyYAML  `yaml:"error_policy,omitempty"`
+		AttemptTimeoutSeconds         *int              `yaml:"attempt_timeout_seconds,omitempty"`
+		HealthWindowSeconds           *int              `yaml:"health_window_seconds,omitempty"`
+		DegradedAttemptTimeoutSeconds *int              `yaml:"degraded_attempt_timeout_seconds,omitempty"`
+	}{Enabled: enabled, Priority: priority, Routes: request.Routes, LegacyRoutes: legacyRoutes, ErrorPolicy: request.ErrorPolicy, AttemptTimeoutSeconds: request.AttemptTimeoutSeconds, HealthWindowSeconds: request.HealthWindowSeconds, DegradedAttemptTimeoutSeconds: request.DegradedAttemptTimeoutSeconds}
 	raw, err := yaml.Marshal(wire)
 	if err != nil {
 		return modelRouterJSONResponse(http.StatusInternalServerError, map[string]any{

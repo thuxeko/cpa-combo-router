@@ -97,6 +97,16 @@ type routerConfig struct {
 	// RetryDeadlineSeconds bounds the total retry time for one request. Zero
 	// means "no bound".
 	RetryDeadlineSeconds int
+	// HealthWindowSeconds is how long a target's last failure stays "recent".
+	// A failure inside the window marks the target degraded: it gets a shorter
+	// first-byte timeout (DegradedAttemptTimeoutSeconds) and is demoted in the
+	// priority ordering so healthy targets are tried first.
+	HealthWindowSeconds int
+	// DegradedAttemptTimeoutSeconds caps the first-byte wait for a target that
+	// failed recently. Shorter than attempt_timeout_seconds so a slow target
+	// costs less of the caller's patience before the router moves on.
+	// Zero disables the per-target reduction.
+	DegradedAttemptTimeoutSeconds int
 }
 
 // providerOf returns the provider prefix of a routed target, so "ca2/kimi-k3"
@@ -166,6 +176,11 @@ type routerConfigYAML struct {
 	RetryBackoffSeconds *int `yaml:"retry_backoff_seconds,omitempty"`
 	// RetryDeadlineSeconds bounds the total retry time of one request.
 	RetryDeadlineSeconds *int `yaml:"retry_deadline_seconds,omitempty"`
+	// HealthWindowSeconds is how long a target's last failure stays recent.
+	HealthWindowSeconds *int `yaml:"health_window_seconds,omitempty"`
+	// DegradedAttemptTimeoutSeconds caps the first-byte wait for a target that
+	// failed inside the health window.
+	DegradedAttemptTimeoutSeconds *int `yaml:"degraded_attempt_timeout_seconds,omitempty"`
 }
 
 func decodeRouterConfig(raw []byte) (routerConfig, error) {
@@ -311,19 +326,35 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 	if retryDeadline < 0 || retryDeadline > maxRetryDeadlineSeconds {
 		return routerConfig{}, fmt.Errorf("retry_deadline_seconds phải nằm trong khoảng 0 đến %d", maxRetryDeadlineSeconds)
 	}
+	healthWindow := 0
+	if wire.HealthWindowSeconds != nil {
+		healthWindow = *wire.HealthWindowSeconds
+	}
+	if healthWindow < 0 || healthWindow > maxHealthWindowSeconds {
+		return routerConfig{}, fmt.Errorf("health_window_seconds phải nằm trong khoảng 0 đến %d", maxHealthWindowSeconds)
+	}
+	degradedTimeout := 0
+	if wire.DegradedAttemptTimeoutSeconds != nil {
+		degradedTimeout = *wire.DegradedAttemptTimeoutSeconds
+	}
+	if degradedTimeout < 0 || degradedTimeout > maxAttemptTimeoutSeconds {
+		return routerConfig{}, fmt.Errorf("degraded_attempt_timeout_seconds phải nằm trong khoảng 0 đến %d", maxAttemptTimeoutSeconds)
+	}
 	return routerConfig{
-		Enabled:               enabled,
-		StatePath:             absoluteStatePath,
-		Routes:                routes,
-		FallbackOnStatus:      fallbackOnStatus,
-		NoFallbackOnStatus:    noFallbackOnStatus,
-		ErrorPolicy:           policy,
-		ErrorPolicyConfigured: errorPolicyConfigured,
-		AttemptTimeoutSeconds: attemptTimeout,
-		ProviderLimits:        providerLimits,
-		AttemptRetries:        attemptRetries,
-		RetryBackoffSeconds:   retryBackoff,
-		RetryDeadlineSeconds:  retryDeadline,
+		Enabled:                       enabled,
+		StatePath:                     absoluteStatePath,
+		Routes:                        routes,
+		FallbackOnStatus:              fallbackOnStatus,
+		NoFallbackOnStatus:            noFallbackOnStatus,
+		ErrorPolicy:                   policy,
+		ErrorPolicyConfigured:         errorPolicyConfigured,
+		AttemptTimeoutSeconds:         attemptTimeout,
+		ProviderLimits:                providerLimits,
+		AttemptRetries:                attemptRetries,
+		RetryBackoffSeconds:           retryBackoff,
+		RetryDeadlineSeconds:          retryDeadline,
+		HealthWindowSeconds:           healthWindow,
+		DegradedAttemptTimeoutSeconds: degradedTimeout,
 	}, nil
 }
 

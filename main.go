@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -60,6 +61,9 @@ func newComboRouterPlugin(configYAML []byte, previous *comboRouterPlugin) (*comb
 	// The per-provider in-flight budget belongs to the upstream account, so it
 	// is applied after Clone: editing a route must not silently drop it.
 	runtime.SetProviderLimits(cfg.ProviderLimits)
+	// The degraded window drives both the health-aware ordering and the
+	// shortened first-byte timeout for targets that failed recently.
+	runtime.SetHealthWindow(time.Duration(cfg.HealthWindowSeconds) * time.Second)
 	plugin := &comboRouterPlugin{config: cfg, runtime: runtime}
 	metadata := pluginapi.Metadata{
 		Name:             pluginName,
@@ -74,6 +78,8 @@ func newComboRouterPlugin(configYAML []byte, previous *comboRouterPlugin) (*comb
 			{Name: "attempt_retries", Type: pluginapi.ConfigFieldTypeInteger, Description: "Extra attempts at the SAME target before moving to the next one, e.g. 3. A provider that answers 'busy' for a second is not a dead target; retrying it avoids cooling a healthy route. 0 (default) keeps one attempt per target."},
 			{Name: "retry_backoff_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Pause between two attempts at the same target (default 2). The upstream's own Retry-After wins when it is longer."},
 			{Name: "retry_deadline_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Total retry time one request may spend before giving up (default 90, must stay under the client's own timeout)."},
+			{Name: "health_window_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "How long a target's last failure keeps it degraded: it is demoted in the priority order and gets a shorter first-byte timeout (0 disables; default 300)."},
+			{Name: "degraded_attempt_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "First-byte timeout for a target that failed inside the health window; shorter than attempt_timeout_seconds so a slow target costs less (0 uses attempt_timeout_seconds)."},
 			{Name: "fallback", Type: pluginapi.ConfigFieldTypeObject, Description: "Legacy status lists kept for compatibility: fallback_on_status, no_fallback_on_status."},
 			{Name: "state_path", Type: pluginapi.ConfigFieldTypeString, Description: "Where live cooldown state is persisted across restarts; defaults to combo-router-state.json in the CPA plugins directory."},
 		},

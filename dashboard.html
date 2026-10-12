@@ -8,6 +8,7 @@
 {{include "dashboard/shared.css"}}
 {{include "dashboard/configuration/styles.css"}}
 {{include "dashboard/policy/styles.css"}}
+{{include "dashboard/health/styles.css"}}
 </style>
 </head>
 <body>
@@ -32,10 +33,12 @@
     <nav class="page-tabs" role="tablist" aria-label="Các mục của Combo Router">
       <button id="configuration-tab" class="page-tab" type="button" role="tab" aria-selected="true" aria-controls="configuration-panel" tabindex="0">Tuyến</button>
       <button id="policy-tab" class="page-tab" type="button" role="tab" aria-selected="false" aria-controls="policy-panel" tabindex="-1">Chính sách lỗi</button>
+      <button id="health-tab" class="page-tab" type="button" role="tab" aria-selected="false" aria-controls="health-panel" tabindex="-1">Sức khỏe</button>
     </nav>
 
 {{include "dashboard/configuration/panel.html"}}
 {{include "dashboard/policy/panel.html"}}
+{{include "dashboard/health/panel.html"}}
   </main>
 </div>
 
@@ -47,6 +50,7 @@
 {{include "dashboard/tabs.js"}}
 {{include "dashboard/configuration/tab.js"}}
 {{include "dashboard/policy/tab.js"}}
+{{include "dashboard/health/tab.js"}}
 {{include "dashboard/app.js"}}
 </script>
 </body>

@@ -47,6 +47,21 @@ func executeWithAttemptTimeout(host modelHost, request pluginapi.HostModelExecut
 	}
 }
 
+// attemptTimeoutFor resolves the first-byte timeout for one attempt at a
+// target. A target that failed inside the health window gets the degraded
+// timeout when one is configured, so a slow or sick target costs less of the
+// caller's patience before the router moves on. The degraded value may not
+// exceed the base attempt timeout: making a sick target wait LONGER than a
+// healthy one defeats the point.
+func (p *comboRouterPlugin) attemptTimeoutFor(route modelRoute, model string, budget retryBudget) time.Duration {
+	base := time.Duration(p.config.AttemptTimeoutSeconds) * time.Second
+	degraded := time.Duration(p.config.DegradedAttemptTimeoutSeconds) * time.Second
+	if degraded > 0 && degraded < base && p.runtime.IsDegraded(route, model) {
+		base = degraded
+	}
+	return budget.attemptLimit(base)
+}
+
 func (p *comboRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, host modelHost) (pluginapi.ExecutorResponse, error) {
 	if p == nil || host == nil {
 		return pluginapi.ExecutorResponse{}, statusError{status: http.StatusBadGateway, message: "model router host callback is unavailable"}
@@ -58,7 +73,6 @@ func (p *comboRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 	requestedModel := strings.TrimSpace(request.Model)
 	bodyInfo := bodyForExecution(request)
 	cfg := p.config
-	attemptTimeout := time.Duration(cfg.AttemptTimeoutSeconds) * time.Second
 	budget := newRetryBudget(cfg.RetryDeadlineSeconds)
 	backoff := time.Duration(cfg.RetryBackoffSeconds) * time.Second
 	var lastErr error
@@ -101,7 +115,16 @@ func (p *comboRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 			outcome  policyOutcome
 		)
 		for retriesUsed := 0; ; retriesUsed++ {
-			response, err = executeWithAttemptTimeout(host, hostRequest(request, bodyInfo, target, false), budget.attemptLimit(attemptTimeout))
+			attemptStart := time.Now()
+			response, err = executeWithAttemptTimeout(host, hostRequest(request, bodyInfo, target, false), p.attemptTimeoutFor(route, selection.model, budget))
+			// TTFB for the buffered path is the whole host call: the first
+			// byte and the last byte land together. It still measures how
+			// long the target held the request open.
+			ttfb := time.Since(attemptStart)
+			timedOut := false
+			if _, isTimeout := err.(attemptTimeoutError); isTimeout {
+				timedOut = true
+			}
 			status := response.StatusCode
 			if status == 0 && err == nil {
 				status = http.StatusOK
@@ -110,6 +133,7 @@ func (p *comboRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 				status = statusFromError(err)
 			}
 			if err == nil && status >= 200 && status < 300 {
+				p.runtime.RecordAttempt(route, selection.model, ttfb.Milliseconds(), false, false)
 				p.runtime.Release(selection.model)
 				p.runtime.MarkSuccess(route, selection.model)
 				return pluginapi.ExecutorResponse{
@@ -125,6 +149,7 @@ func (p *comboRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 			if err == nil {
 				err = statusError{status: status, message: hostStatusMessage(target, status, response.Body)}
 			}
+			p.runtime.RecordAttempt(route, selection.model, ttfb.Milliseconds(), timedOut, true)
 			// The upstream's own Retry-After is more accurate than any
 			// configured number, so it is read here and handed to the policy.
 			retryAfter := parseRetryAfter(response.Headers)

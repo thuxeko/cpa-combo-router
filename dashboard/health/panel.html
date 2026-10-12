@@ -1,0 +1,17 @@
+<section id="health-panel" class="tab-panel" role="tabpanel" aria-labelledby="health-tab" hidden>
+  <div class="control-strip" aria-label="Sức khỏe tuyến">
+    <p class="strip-note">Số liệu tích lũy từ khi CPA khởi động. Đích có lỗi trong cửa sổ <code>health_window_seconds</code> bị gắn nhãn <strong>đang kém</strong>: bị đẩy xuống cuối hàng đợi nhưng vẫn được thử, và bị rút ngắn thời gian chờ byte đầu tiên (nếu có khai <code>degraded_attempt_timeout_seconds</code>).</p>
+    <div class="health-strip-right">
+      <span id="health-status" class="health-status">Đang chờ dữ liệu…</span>
+      <button id="health-refresh" class="secondary" type="button">Làm mới</button>
+    </div>
+  </div>
+
+  <div id="health-routes" class="health-routes" aria-live="polite"></div>
+  <div id="health-empty" class="health-empty" hidden>Chưa có lượt gọi nào được ghi nhận. Gửi một request đi qua tuyến combo-router rồi quay lại đây.</div>
+
+  <p class="health-foot">
+    <span id="health-dot" class="dot" data-tone="ok"></span>
+    <span id="health-foot-text">Tự làm mới mỗi 10 giây khi tab này đang mở.</span>
+  </p>
+</section>

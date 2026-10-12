@@ -5,6 +5,7 @@ observeHostTheme();
 initializeConfigurationActions();
 initializeConfigurationEvents();
 initializePolicyEvents();
+initializeHealthEvents();
 tabs.forEach(tab=>{
   tab.addEventListener('click',()=>activateTab(tab.id.replace(/-tab$/,''),false));
   tab.addEventListener('keydown',handleTabKey);

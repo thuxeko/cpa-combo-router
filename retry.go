@@ -26,6 +26,9 @@ const (
 	maxRetryBackoffSeconds = 60
 	// maxRetryDeadlineSeconds caps the whole-request retry budget.
 	maxRetryDeadlineSeconds = 3600
+	// maxHealthWindowSeconds caps how long a failure keeps a target labelled
+	// degraded, so a typo cannot park a target as "unhealthy" beyond a day.
+	maxHealthWindowSeconds = 86400
 )
 
 // retryBudget bounds the total time one request may spend retrying. A provider

@@ -41,7 +41,6 @@ func (p *comboRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 	requestedModel := strings.TrimSpace(request.Model)
 	bodyInfo := bodyForExecution(request)
 	cfg := p.config
-	attemptTimeout := time.Duration(cfg.AttemptTimeoutSeconds) * time.Second
 	budget := newRetryBudget(cfg.RetryDeadlineSeconds)
 	backoff := time.Duration(cfg.RetryBackoffSeconds) * time.Second
 
@@ -77,7 +76,7 @@ func (p *comboRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 		// load to that provider.
 		var outcome streamAttemptOutcome
 		for retriesUsed := 0; ; retriesUsed++ {
-			outcome = forwardStreamAttempt(request, bodyInfo, target, requestedModel, pluginStreamID, host, budget.attemptLimit(attemptTimeout), cfg, route, selection.model)
+			outcome = forwardStreamAttempt(request, bodyInfo, target, requestedModel, pluginStreamID, host, p.attemptTimeoutFor(route, selection.model, budget), cfg, route, selection.model, p.runtime)
 			if outcome.err == nil {
 				break
 			}
@@ -161,8 +160,9 @@ func closeAbandonedStream(host modelHost, started <-chan streamStartOutcome) {
 // The keep-alive heartbeat is NOT started here — the caller owns it, because it
 // must also cover the pauses between retries at the same target. Starting one
 // per attempt would emit duplicate frames and leave the pauses silent.
-func forwardStreamAttempt(request pluginapi.ExecutorRequest, bodyInfo executionBody, target, requestedModel, pluginStreamID string, host modelHost, attemptTimeout time.Duration, cfg routerConfig, route modelRoute, selected string) streamAttemptOutcome {
+func forwardStreamAttempt(request pluginapi.ExecutorRequest, bodyInfo executionBody, target, requestedModel, pluginStreamID string, host modelHost, attemptTimeout time.Duration, cfg routerConfig, route modelRoute, selected string, runtime *routeRuntime) streamAttemptOutcome {
 	started := make(chan streamStartOutcome, 1)
+	attemptStart := time.Now()
 	go func() {
 		response, err := host.StartStream(hostRequest(request, bodyInfo, target, true))
 		started <- streamStartOutcome{response: response, streamID: response.StreamID, err: err}
@@ -182,6 +182,7 @@ func forwardStreamAttempt(request pluginapi.ExecutorRequest, bodyInfo executionB
 			// otherwise the provider generates for nobody.
 			closeAbandonedStream(host, started)
 			err = attemptTimeoutError{target: target, limit: attemptTimeout}
+			runtime.RecordAttempt(route, selected, 0, true, true)
 		}
 	} else {
 		result := <-started
@@ -196,33 +197,50 @@ func forwardStreamAttempt(request pluginapi.ExecutorRequest, bodyInfo executionB
 		if status := response.StatusCode; status > 0 {
 			err = statusError{status: status, message: err.Error()}
 		}
+		runtime.RecordAttempt(route, selected, 0, false, true)
 		return streamAttemptOutcome{err: err, decision: decideAttempt(err, cfg, route, selected, retryAfter, consecutive)}
 	}
 	if response.StatusCode >= 400 {
 		_ = host.CloseStream(response.StreamID)
 		statusErr := statusError{status: response.StatusCode, message: fmt.Sprintf("host model %s stream returned status %d", target, response.StatusCode)}
+		runtime.RecordAttempt(route, selected, 0, false, true)
 		return streamAttemptOutcome{err: statusErr, decision: decideAttempt(statusErr, cfg, route, selected, retryAfter, consecutive)}
 	}
 	if strings.TrimSpace(response.StreamID) == "" {
 		statusErr := statusError{status: http.StatusBadGateway, message: "host model stream returned an empty stream id"}
+		runtime.RecordAttempt(route, selected, 0, false, true)
 		return streamAttemptOutcome{err: statusErr, decision: decideAttempt(statusErr, cfg, route, selected, retryAfter, consecutive)}
 	}
 	defer func() { _ = host.CloseStream(response.StreamID) }()
 	rewriter := newStreamModelRewriter(requestedModel)
 	receivedPayload := false
+	firstChunkAt := time.Time{}
+	record := func(failed, timedOut bool) {
+		ttfb := int64(0)
+		if !firstChunkAt.IsZero() {
+			ttfb = firstChunkAt.Sub(attemptStart).Milliseconds()
+		}
+		runtime.RecordAttempt(route, selected, ttfb, timedOut, failed)
+	}
 	for {
 		chunk, err := host.ReadStream(response.StreamID)
 		if err != nil {
+			record(true, false)
 			return streamAttemptOutcome{receivedPayload: receivedPayload, err: err, decision: decideAttempt(err, cfg, route, selected, retryAfter, consecutive)}
 		}
 		if strings.TrimSpace(chunk.Error) != "" {
 			chunkErr := statusError{status: statusFromError(fmt.Errorf("%s", chunk.Error)), message: chunk.Error}
+			record(true, false)
 			return streamAttemptOutcome{receivedPayload: receivedPayload, err: chunkErr, decision: decideAttempt(chunkErr, cfg, route, selected, retryAfter, consecutive)}
 		}
 		if len(chunk.Payload) > 0 {
+			if firstChunkAt.IsZero() {
+				firstChunkAt = time.Now()
+			}
 			receivedPayload = true
 			if rewritten := rewriter.Rewrite(chunk.Payload); len(rewritten) > 0 {
 				if err := host.Emit(pluginStreamID, rewritten); err != nil {
+					record(true, false)
 					return streamAttemptOutcome{receivedPayload: true, err: err, decision: policyOutcome{Action: errorActionStop}}
 				}
 			}
@@ -230,9 +248,11 @@ func forwardStreamAttempt(request pluginapi.ExecutorRequest, bodyInfo executionB
 		if chunk.Done {
 			if tail := rewriter.Finish(); len(tail) > 0 {
 				if err := host.Emit(pluginStreamID, tail); err != nil {
+					record(true, false)
 					return streamAttemptOutcome{receivedPayload: receivedPayload, err: err, decision: policyOutcome{Action: errorActionStop}}
 				}
 			}
+			record(false, false)
 			return streamAttemptOutcome{receivedPayload: receivedPayload, err: nil}
 		}
 	}

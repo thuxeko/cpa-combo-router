@@ -251,6 +251,7 @@ func TestForwardStreamAttemptClosesStreamAbandonedByTimeout(t *testing.T) {
 		executionBody{body: []byte(`{"model":"smart"}`), entryProtocol: "openai", responseProtocol: "openai"},
 		"provider-a", "smart", "plugin-stream", host,
 		50*time.Millisecond, plugin.config, testModelRoute("smart", routeStrategyPriority, 30, "provider-a"), "provider-a",
+		newRouteRuntime(time.Now),
 	)
 	if _, timedOut := outcome.err.(attemptTimeoutError); !timedOut {
 		t.Fatalf("forwardStreamAttempt() error = %v, want attemptTimeoutError", outcome.err)

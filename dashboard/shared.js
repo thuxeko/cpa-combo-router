@@ -39,6 +39,7 @@ const addRouteEl=document.getElementById('add-route');
 const toastEl=document.getElementById('toast');
 const configurationPanelEl=document.getElementById('configuration-panel');
 const policyPanelEl=document.getElementById('policy-panel');
+const healthPanelEl=document.getElementById('health-panel');
 const policyRulesEl=document.getElementById('policy-rules');
 const policyCountEl=document.getElementById('policy-count');
 const policyDefaultActionEl=document.getElementById('policy-default-action');

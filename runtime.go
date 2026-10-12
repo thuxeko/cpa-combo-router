@@ -25,6 +25,9 @@ type routeRuntime struct {
 	// provider share one upstream account, so they must share one allowance.
 	providerLimits map[string]int
 	providerLeases map[string]int
+	// healthWindow is how long a target's last failure keeps it labelled
+	// degraded. Zero disables degraded-aware ordering.
+	healthWindow time.Duration
 }
 
 type routeState struct {
@@ -34,11 +37,32 @@ type routeState struct {
 	// failures counts consecutive failures per target. It feeds the exponential
 	// backoff and opens the circuit once the target has failed repeatedly.
 	failures map[string]int
+	// lastFailures records the most recent time each target was penalised. A
+	// target whose last failure is inside the health window is "degraded": it
+	// is demoted in the priority order and gets a shorter first-byte timeout.
+	lastFailures map[string]time.Time
+	// metrics carries the per-target health counters that back the dashboard.
+	// It is deliberately ephemeral — a restart starts the numbers fresh.
+	metrics map[string]*targetMetrics
 	// probing holds the targets whose cooldown expired after repeated failures
 	// and that currently have one request out testing them. Only one request may
 	// probe a target at a time: a recovered target should be discovered, not
 	// stampeded.
 	probing map[string]struct{}
+}
+
+// targetMetrics is the rolling health record for one target inside one route.
+// All fields are counters over the process lifetime; the dashboard reads them
+// as-is and the window only decides the degraded label.
+type targetMetrics struct {
+	attempts       int64
+	successes      int64
+	timeouts       int64
+	failures       int64
+	ttfbSumMs      int64
+	ttfbCount      int64
+	lastTTFBMillis int64
+	lastSeen       time.Time
 }
 
 type routeSelection struct {
@@ -109,6 +133,43 @@ func (runtime *routeRuntime) SetProviderLimits(limits map[string]int) {
 		copied[name] = limit
 	}
 	runtime.providerLimits = copied
+}
+
+// healthWindowSeconds reports the configured degraded window (0 = disabled).
+func (runtime *routeRuntime) healthWindowSeconds() int {
+	if runtime == nil {
+		return 0
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return int(runtime.healthWindow / time.Second)
+}
+
+// SetHealthWindow installs the degraded window used by health-based ordering
+// and the degraded attempt timeout.
+func (runtime *routeRuntime) SetHealthWindow(window time.Duration) {
+	if runtime == nil {
+		return
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.healthWindow = window
+}
+
+// IsDegraded reports whether a target failed inside the health window. The
+// execution paths use it to shorten the first-byte timeout for a target that
+// was just sick.
+func (runtime *routeRuntime) IsDegraded(route modelRoute, model string) bool {
+	if runtime == nil || strings.TrimSpace(model) == "" {
+		return false
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	state := runtime.stateLocked(route)
+	if state == nil {
+		return false
+	}
+	return state.degradedLocked(model, runtime.now(), runtime.healthWindow)
 }
 
 // providerBudget reports whether a slot is free at the provider behind a
@@ -336,10 +397,12 @@ func (runtime *routeRuntime) Sync(routes []modelRoute) {
 
 func newRouteState(signature string) *routeState {
 	return &routeState{
-		signature: signature,
-		cooldowns: make(map[string]time.Time),
-		failures:  make(map[string]int),
-		probing:   make(map[string]struct{}),
+		signature:    signature,
+		cooldowns:    make(map[string]time.Time),
+		failures:     make(map[string]int),
+		lastFailures: make(map[string]time.Time),
+		metrics:      make(map[string]*targetMetrics),
+		probing:      make(map[string]struct{}),
 	}
 }
 
@@ -355,6 +418,7 @@ func (runtime *routeRuntime) Clone(routes []modelRoute) *routeRuntime {
 	cloned.persistPath = runtime.persistPath
 	cloned.jitter = runtime.jitter
 	cloned.providerLimits = runtime.providerLimits
+	cloned.healthWindow = runtime.healthWindow
 	for _, route := range routes {
 		key := routeKey(route.Alias)
 		signature := routeSignature(route)
@@ -367,6 +431,13 @@ func (runtime *routeRuntime) Clone(routes []modelRoute) *routeRuntime {
 			}
 			for model, count := range old.failures {
 				state.failures[model] = count
+			}
+			for model, when := range old.lastFailures {
+				state.lastFailures[model] = when
+			}
+			for model, metric := range old.metrics {
+				copied := *metric
+				state.metrics[model] = &copied
 			}
 		}
 		cloned.states[key] = state
@@ -444,15 +515,30 @@ func (runtime *routeRuntime) SelectExcluding(route modelRoute, excluded map[stri
 		return true, false
 	}
 	if route.Strategy != routeStrategyRoundRobin {
-		for _, target := range route.Targets {
-			model := strings.TrimSpace(target.Model)
-			if _, skip := excluded[routeKey(model)]; skip {
-				continue
-			}
-			if ok, blocked := usable(model); ok {
-				return routeSelection{model: model}
-			} else if blocked {
-				providerBlocked = true
+		// Priority ordering is degraded-aware: a target that failed inside the
+		// health window is demoted below the healthy ones, so a request does
+		// not march straight into the target that was just sick. Healthy
+		// targets keep their configured relative order.
+		now := runtime.now()
+		// SelectExcluding already holds runtime.mu, so read the field directly
+		// instead of the locking accessor (sync.Mutex is not reentrant).
+		window := runtime.healthWindow
+		// Two passes: healthy first in configured order, then degraded in
+		// configured order. Excluded targets are skipped in both passes.
+		for _, degraded := range []bool{false, true} {
+			for _, target := range route.Targets {
+				model := strings.TrimSpace(target.Model)
+				if _, skip := excluded[routeKey(model)]; skip {
+					continue
+				}
+				if state.degradedLocked(model, now, window) != degraded {
+					continue
+				}
+				if ok, blocked := usable(model); ok {
+					return routeSelection{model: model}
+				} else if blocked {
+					providerBlocked = true
+				}
 			}
 		}
 	} else {
@@ -512,6 +598,8 @@ func targetCooldownSeconds(route modelRoute, model string) int {
 
 // MarkFailure records a failed attempt. The cooldown comes from the error
 // policy; a zero cooldown means the policy chose not to penalise the target.
+// Any penalised failure also stamps the target's last-failure time, which is
+// what backs the degraded label and the health ordering.
 func (runtime *routeRuntime) MarkFailure(route modelRoute, model string, cooldown time.Duration) {
 	if runtime == nil || strings.TrimSpace(model) == "" {
 		return
@@ -524,6 +612,7 @@ func (runtime *routeRuntime) MarkFailure(route modelRoute, model string, cooldow
 	}
 	key := routeKey(model)
 	state.failures[key]++
+	state.lastFailures[key] = runtime.now()
 	delete(state.probing, key)
 	if cooldown <= 0 {
 		runtime.persistLocked()
@@ -569,9 +658,113 @@ func (runtime *routeRuntime) MarkSuccess(route modelRoute, model string) {
 		return
 	}
 	delete(state.failures, key)
+	delete(state.lastFailures, key)
 	delete(state.probing, key)
 	delete(state.cooldowns, key)
 	runtime.persistLocked()
+}
+
+// RecordAttempt registers that an attempt was sent to a target. The ttfbMillis
+// parameter is the first-byte wait (0 when the attempt never produced one).
+// It feeds the health snapshot that the dashboard renders.
+func (runtime *routeRuntime) RecordAttempt(route modelRoute, model string, ttfbMillis int64, timedOut, failed bool) {
+	if runtime == nil || strings.TrimSpace(model) == "" {
+		return
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	state := runtime.stateLocked(route)
+	if state == nil {
+		return
+	}
+	key := routeKey(model)
+	metric := state.metrics[key]
+	if metric == nil {
+		metric = &targetMetrics{}
+		state.metrics[key] = metric
+	}
+	metric.attempts++
+	metric.lastSeen = runtime.now()
+	if timedOut {
+		metric.timeouts++
+	}
+	if failed {
+		metric.failures++
+	} else if !timedOut {
+		metric.successes++
+	}
+	if ttfbMillis > 0 {
+		metric.ttfbSumMs += ttfbMillis
+		metric.ttfbCount++
+		metric.lastTTFBMillis = ttfbMillis
+	}
+}
+
+// degradedLocked reports whether a target failed recently enough to be
+// considered degraded. The caller must hold runtime.mu.
+func (state *routeState) degradedLocked(model string, now time.Time, window time.Duration) bool {
+	if window <= 0 {
+		return false
+	}
+	when, ok := state.lastFailures[routeKey(model)]
+	return ok && now.Sub(when) <= window
+}
+
+// HealthSnapshot renders the current per-target health of every route for the
+// dashboard. It is read-only and cheap: one pass over the in-memory maps.
+func (runtime *routeRuntime) HealthSnapshot(now time.Time) routeHealthSnapshot {
+	if runtime == nil {
+		return routeHealthSnapshot{}
+	}
+	if now.IsZero() {
+		now = runtime.now()
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	routes := make(map[string]routeHealth, len(runtime.states))
+	for key, state := range runtime.states {
+		entry := routeHealth{Targets: make(map[string]targetHealth, len(state.metrics))}
+		for model, metric := range state.metrics {
+			ttfbAvg := int64(0)
+			if metric.ttfbCount > 0 {
+				ttfbAvg = metric.ttfbSumMs / metric.ttfbCount
+			}
+			entry.Targets[model] = targetHealth{
+				Attempts:       metric.attempts,
+				Successes:      metric.successes,
+				Timeouts:       metric.timeouts,
+				Failures:       metric.failures,
+				TTFBAvgMillis:  ttfbAvg,
+				LastTTFBMillis: metric.lastTTFBMillis,
+				LastSeen:       metric.lastSeen,
+				Degraded:       state.degradedLocked(model, now, runtime.healthWindow),
+			}
+		}
+		routes[key] = entry
+	}
+	return routeHealthSnapshot{Routes: routes}
+}
+
+// routeHealthSnapshot is the wire form of HealthSnapshot.
+type routeHealthSnapshot struct {
+	Routes map[string]routeHealth `json:"routes"`
+}
+
+// routeHealth is one route's aggregated target health.
+type routeHealth struct {
+	Targets map[string]targetHealth `json:"targets"`
+}
+
+// targetHealth is the wire form of one target's counters.
+type targetHealth struct {
+	Attempts       int64     `json:"attempts"`
+	Successes      int64     `json:"successes"`
+	Timeouts       int64     `json:"timeouts"`
+	Failures       int64     `json:"failures"`
+	TTFBAvgMillis  int64     `json:"ttfb_avg_ms"`
+	LastTTFBMillis int64     `json:"last_ttfb_ms"`
+	LastSeen       time.Time `json:"last_seen"`
+	Degraded       bool      `json:"degraded"`
 }
 
 // ReleaseProbe returns a probe slot that never produced a verdict, so a request

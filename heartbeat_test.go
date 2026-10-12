@@ -189,6 +189,7 @@ func TestForwardStreamAttemptHeartbeatsWhileWaitingForFirstByte(t *testing.T) {
 			executionBody{body: []byte(`{"model":"strong"}`), entryProtocol: "openai", responseProtocol: "openai"},
 			"ca2/qwen3.8-max-0902", "strong", "plugin-stream-1", host,
 			300*time.Millisecond, routerConfig{}, modelRoute{Alias: "strong"}, "ca2/qwen3.8-max-0902",
+			newRouteRuntime(time.Now),
 		)
 	}()
 
