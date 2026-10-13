@@ -68,6 +68,10 @@ function normalizeAttemptTimeout(config){
   const value=config&&typeof config==='object'?config.attempt_timeout_seconds:null;
   return Number.isInteger(value)&&value>=0?String(value):'45';
 }
+function normalizeMaxCooldownWait(config){
+  const value=config&&typeof config==='object'?config.max_cooldown_wait_seconds:null;
+  return Number.isInteger(value)&&value>=0?String(value):'20';
+}
 // parseStatusList turns "429, 500-504" into [429,500,501,502,503,504]. It returns
 // the invalid fragments so the panel can name what it could not read.
 function parseStatusList(text){
@@ -297,4 +301,5 @@ function initializePolicyEvents(){
   policyDefaultActionEl.addEventListener('change',()=>updatePolicyFromInput(policyDefaultActionEl));
   policyDefaultCooldownEl.addEventListener('input',()=>updatePolicyFromInput(policyDefaultCooldownEl));
   attemptTimeoutEl.addEventListener('input',()=>{state.attemptTimeout=attemptTimeoutEl.value;refreshDirty()});
+  maxCooldownWaitEl.addEventListener('input',()=>{state.maxCooldownWait=maxCooldownWaitEl.value;refreshDirty()});
 }

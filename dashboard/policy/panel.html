@@ -7,6 +7,14 @@
         <p class="strip-note">Chỉ đếm tới lúc byte đầu tiên về. Khi một đích đã bắt đầu trả lời thì không cắt nữa, vì nửa câu trả lời không thể đưa cho nhà cung cấp khác. Để 0 là chờ mãi.</p>
       </section>
 
+      <section class="control-strip" aria-label="Chờ khi cả nhóm nguội">
+        <div class="priority-field">
+          <label for="max-cooldown-wait">Chờ nguội tối đa (giây)</label>
+          <input id="max-cooldown-wait" type="number" min="0" max="60" step="1" inputmode="numeric">
+        </div>
+        <p class="strip-note">Khi mọi đích đang nguội, giữ request chờ tới 20 giây cho đích sớm nhất tỉnh lại thay vì trả lỗi ngay — IDE không bị đứt task giữa chừng. Để 0 là tắt (trả lỗi ngay như cũ).</p>
+      </section>
+
       <div class="section-head">
         <div class="section-title">
           <h2>Khi một đích gặp lỗi</h2>

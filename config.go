@@ -38,6 +38,16 @@ var defaultFallbackOnStatus = []int{
 	401, 402, 403, 404, 408, 429, 500, 502, 503, 504,
 }
 
+// defaultCooldownWaitSeconds is how long one request holds waiting for the
+// earliest cooling target to come back before it gives up. 20 is the ceiling
+// the operator chose: an IDE task aborts far later, so a transient burst of
+// failures no longer tears the request apart.
+const defaultCooldownWaitSeconds = 20
+
+// maxCooldownWaitSeconds caps the configured value so a typo cannot park
+// every request behind a cooldown for minutes.
+const maxCooldownWaitSeconds = 60
+
 type modelTarget struct {
 	Model  string
 	Weight int
@@ -107,6 +117,10 @@ type routerConfig struct {
 	// costs less of the caller's patience before the router moves on.
 	// Zero disables the per-target reduction.
 	DegradedAttemptTimeoutSeconds int
+	// MaxCooldownWaitSeconds is how long one request holds waiting for the
+	// earliest cooling target to come back before it gives up with a 503.
+	// Zero keeps the original behaviour of failing the request immediately.
+	MaxCooldownWaitSeconds int
 }
 
 // providerOf returns the provider prefix of a routed target, so "ca2/kimi-k3"
@@ -181,6 +195,9 @@ type routerConfigYAML struct {
 	// DegradedAttemptTimeoutSeconds caps the first-byte wait for a target that
 	// failed inside the health window.
 	DegradedAttemptTimeoutSeconds *int `yaml:"degraded_attempt_timeout_seconds,omitempty"`
+	// MaxCooldownWaitSeconds is how long one request holds waiting for the
+	// earliest cooling target to come back before it gives up.
+	MaxCooldownWaitSeconds *int `yaml:"max_cooldown_wait_seconds,omitempty"`
 }
 
 func decodeRouterConfig(raw []byte) (routerConfig, error) {
@@ -340,6 +357,13 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 	if degradedTimeout < 0 || degradedTimeout > maxAttemptTimeoutSeconds {
 		return routerConfig{}, fmt.Errorf("degraded_attempt_timeout_seconds phải nằm trong khoảng 0 đến %d", maxAttemptTimeoutSeconds)
 	}
+	cooldownWait := defaultCooldownWaitSeconds
+	if wire.MaxCooldownWaitSeconds != nil {
+		cooldownWait = *wire.MaxCooldownWaitSeconds
+	}
+	if cooldownWait < 0 || cooldownWait > maxCooldownWaitSeconds {
+		return routerConfig{}, fmt.Errorf("max_cooldown_wait_seconds phải nằm trong khoảng 0 đến %d", maxCooldownWaitSeconds)
+	}
 	return routerConfig{
 		Enabled:                       enabled,
 		StatePath:                     absoluteStatePath,
@@ -355,6 +379,7 @@ func decodeRouterConfig(raw []byte) (routerConfig, error) {
 		RetryDeadlineSeconds:          retryDeadline,
 		HealthWindowSeconds:           healthWindow,
 		DegradedAttemptTimeoutSeconds: degradedTimeout,
+		MaxCooldownWaitSeconds:        cooldownWait,
 	}, nil
 }
 

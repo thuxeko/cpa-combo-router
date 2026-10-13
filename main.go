@@ -80,6 +80,7 @@ func newComboRouterPlugin(configYAML []byte, previous *comboRouterPlugin) (*comb
 			{Name: "retry_deadline_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Total retry time one request may spend before giving up (default 90, must stay under the client's own timeout)."},
 			{Name: "health_window_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "How long a target's last failure keeps it degraded: it is demoted in the priority order and gets a shorter first-byte timeout (0 disables; default 300)."},
 			{Name: "degraded_attempt_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "First-byte timeout for a target that failed inside the health window; shorter than attempt_timeout_seconds so a slow target costs less (0 uses attempt_timeout_seconds)."},
+			{Name: "max_cooldown_wait_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "How long one request holds waiting for a cooling target to free up before it gives up with a 503 (default 20, max 60; 0 disables the wait and keeps the old immediate-failure behaviour)."},
 			{Name: "fallback", Type: pluginapi.ConfigFieldTypeObject, Description: "Legacy status lists kept for compatibility: fallback_on_status, no_fallback_on_status."},
 			{Name: "state_path", Type: pluginapi.ConfigFieldTypeString, Description: "Where live cooldown state is persisted across restarts; defaults to combo-router-state.json in the CPA plugins directory."},
 		},

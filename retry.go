@@ -99,6 +99,28 @@ func (budget retryBudget) pauseFor(backoff, retryAfter time.Duration) time.Durat
 	return pause
 }
 
+// waitForCooldown sleeps until the earliest cooling candidate frees up. The
+// caller has already clipped retryAfter to the total cooldown ceiling; here the
+// wait is additionally clipped to the retry budget so a request cannot hold
+// past its deadline. It returns false when there was nothing to wait for — the
+// caller should surface the route error instead of trying again.
+func (budget retryBudget) waitForCooldown(retryAfter time.Duration) bool {
+	if retryAfter <= 0 {
+		return false
+	}
+	wait := retryAfter
+	if budget.active {
+		if left := budget.remaining(); wait > left {
+			wait = left
+		}
+	}
+	if wait <= 0 {
+		return false
+	}
+	time.Sleep(wait)
+	return true
+}
+
 // attemptLimit clips a per-attempt first-byte cap to what is left of the retry
 // budget, so an attempt that hangs cannot carry the request past the deadline.
 // A cap of zero means "no cap" and is returned unchanged.

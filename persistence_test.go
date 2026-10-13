@@ -41,3 +41,35 @@ routes:
 		t.Fatalf("state file was not written after a failure: %v", err)
 	}
 }
+
+// TestLoadRestoredStateSurvivesFirstAttempt is the regression for the restart
+// panic. Load() rebuilds route state from the persisted file; before the fix it
+// left the metrics and lastFailures maps nil, so the first RecordAttempt (or
+// MarkFailure) after a restart panicked with "assignment to entry in nil map"
+// and took the whole plugin down.
+func TestLoadRestoredStateSurvivesFirstAttempt(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "combo-router-state.json")
+	route := testModelRoute("fast", routeStrategyPriority, 30, "provider-a/model-x", "provider-b/model-x")
+
+	original := newRouteRuntime(nil)
+	original.Sync([]modelRoute{route})
+	original.SetPersistPath(statePath)
+	original.MarkFailure(route, "provider-a/model-x", 30*time.Second)
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("state file was not written: %v", err)
+	}
+
+	loaded := newRouteRuntime(nil)
+	loaded.Load(statePath)
+
+	// The persisted failure must survive the restart.
+	if failures := loaded.FailureCount(route, "provider-a/model-x"); failures != 1 {
+		t.Fatalf("FailureCount after Load = %d, want 1", failures)
+	}
+
+	// Each of these wrote to a nil map before the fix and panicked.
+	loaded.RecordAttempt(route, "provider-a/model-x", 120, false, true)
+	loaded.MarkFailure(route, "provider-a/model-x", 30*time.Second)
+	loaded.MarkSuccess(route, "provider-a/model-x")
+	loaded.RecordAttempt(route, "provider-a/model-x", 80, false, false)
+}

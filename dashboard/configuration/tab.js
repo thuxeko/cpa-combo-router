@@ -12,6 +12,7 @@ function configurationSnapshot(){
     enabled:Boolean(state.enabled),
     priority:canonicalIntegerDraft(state.priority),
     attempt_timeout_seconds:canonicalIntegerDraft(state.attemptTimeout),
+    max_cooldown_wait_seconds:canonicalIntegerDraft(state.maxCooldownWait),
     error_policy:serializeErrorPolicy(),
     routes:state.routes.map(route=>({
       alias:String(route.alias===undefined||route.alias===null?'':route.alias).trim(),
@@ -181,6 +182,7 @@ async function loadConfiguration(){
     state.routes=source.map(normalizeRoute);
     state.errorPolicy=normalizeErrorPolicy(config);
     state.attemptTimeout=normalizeAttemptTimeout(config);
+    state.maxCooldownWait=normalizeMaxCooldownWait(config);
     if(catalogResult.status==='fulfilled'){
       try{
         state.availableModels=normalizeModelCatalog(catalogResult.value,state.routes);
@@ -190,6 +192,7 @@ async function loadConfiguration(){
     enabledEl.checked=state.enabled;
     priorityEl.value=state.priority;
     attemptTimeoutEl.value=state.attemptTimeout;
+    maxCooldownWaitEl.value=state.maxCooldownWait;
     updateModelStatus();
     renderRoutes();
     renderPolicy();
@@ -484,6 +487,7 @@ async function saveConfiguration(){
     enabled:state.enabled,
     priority:integerDraftValue(state.priority),
     attempt_timeout_seconds:integerDraftValue(state.attemptTimeout),
+    max_cooldown_wait_seconds:integerDraftValue(state.maxCooldownWait),
     error_policy:serializeErrorPolicy(),
     routes,
     'model-routes':null

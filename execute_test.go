@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -207,6 +208,67 @@ func TestExecuteWithHostDoesNotFailOverTerminalError(t *testing.T) {
 	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
 	if !errors.Is(err, context.Canceled) || len(host.executeCalls) != 1 {
 		t.Fatalf("executeWithHost() error = %v, calls = %d", err, len(host.executeCalls))
+	}
+}
+
+func TestExecuteWithHostWaitsForCooldownThenSucceeds(t *testing.T) {
+	plugin := testRouterPluginFromConfig(t, `
+max_cooldown_wait_seconds: 3
+routes:
+  - alias: smart
+    cooldown_seconds: 1
+    targets:
+      - model: a
+`)
+	var calls int
+	host := &fakeModelHost{execute: func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		calls++
+		if calls == 1 {
+			return pluginapi.HostModelExecutionResponse{StatusCode: 503, Body: []byte(`{"error":"unavailable"}`)}, nil
+		}
+		return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"model":"a"}`)}, nil
+	}}
+	started := time.Now()
+	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("executeWithHost() error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("host calls = %d, want 2 (one failure, then success after the cooldown wait)", calls)
+	}
+	// The second attempt must have happened AFTER the cooldown expired, i.e.
+	// the request really held. Allow generous scheduling slack.
+	if elapsed < 900*time.Millisecond {
+		t.Fatalf("request finished in %v, want it to hold for the ~1s cooldown", elapsed)
+	}
+}
+
+func TestExecuteWithHostWaitsUpToCeilingThenFails(t *testing.T) {
+	plugin := testRouterPluginFromConfig(t, `
+max_cooldown_wait_seconds: 1
+routes:
+  - alias: smart
+    cooldown_seconds: 30
+    targets:
+      - model: a
+`)
+	host := &fakeModelHost{execute: func(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+		return pluginapi.HostModelExecutionResponse{StatusCode: 503, Body: []byte(`{"error":"unavailable"}`)}, nil
+	}}
+	started := time.Now()
+	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
+	elapsed := time.Since(started)
+	if statusFromError(err) != 503 || codeFromError(err, "") != "model_route_unavailable" {
+		t.Fatalf("executeWithHost() error = %v", err)
+	}
+	if len(host.executeCalls) != 1 {
+		t.Fatalf("host calls = %d, want 1 (the wait is for the cooldown, not a retry)", len(host.executeCalls))
+	}
+	// The 30s cooldown never expires inside the 1s ceiling, so the request
+	// must have held roughly the full ceiling before giving up.
+	if elapsed < 900*time.Millisecond {
+		t.Fatalf("request gave up in %v, want it to hold ~1s before failing", elapsed)
 	}
 }
 

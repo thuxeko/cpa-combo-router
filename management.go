@@ -56,6 +56,7 @@ type modelRouterValidationRequest struct {
 	AttemptTimeoutSeconds         *int             `json:"attempt_timeout_seconds,omitempty"`
 	HealthWindowSeconds           *int             `json:"health_window_seconds,omitempty"`
 	DegradedAttemptTimeoutSeconds *int             `json:"degraded_attempt_timeout_seconds,omitempty"`
+	MaxCooldownWaitSeconds        *int             `json:"max_cooldown_wait_seconds,omitempty"`
 }
 
 func modelRouterManagementRegistration() managementRegistrationResponse {
@@ -200,7 +201,8 @@ func validateModelRouterManagementConfig(body []byte) pluginapi.ManagementRespon
 		AttemptTimeoutSeconds         *int              `yaml:"attempt_timeout_seconds,omitempty"`
 		HealthWindowSeconds           *int              `yaml:"health_window_seconds,omitempty"`
 		DegradedAttemptTimeoutSeconds *int              `yaml:"degraded_attempt_timeout_seconds,omitempty"`
-	}{Enabled: enabled, Priority: priority, Routes: request.Routes, LegacyRoutes: legacyRoutes, ErrorPolicy: request.ErrorPolicy, AttemptTimeoutSeconds: request.AttemptTimeoutSeconds, HealthWindowSeconds: request.HealthWindowSeconds, DegradedAttemptTimeoutSeconds: request.DegradedAttemptTimeoutSeconds}
+		MaxCooldownWaitSeconds        *int              `yaml:"max_cooldown_wait_seconds,omitempty"`
+	}{Enabled: enabled, Priority: priority, Routes: request.Routes, LegacyRoutes: legacyRoutes, ErrorPolicy: request.ErrorPolicy, AttemptTimeoutSeconds: request.AttemptTimeoutSeconds, HealthWindowSeconds: request.HealthWindowSeconds, DegradedAttemptTimeoutSeconds: request.DegradedAttemptTimeoutSeconds, MaxCooldownWaitSeconds: request.MaxCooldownWaitSeconds}
 	raw, err := yaml.Marshal(wire)
 	if err != nil {
 		return modelRouterJSONResponse(http.StatusInternalServerError, map[string]any{

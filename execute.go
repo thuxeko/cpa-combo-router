@@ -75,111 +75,176 @@ func (p *comboRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 	cfg := p.config
 	budget := newRetryBudget(cfg.RetryDeadlineSeconds)
 	backoff := time.Duration(cfg.RetryBackoffSeconds) * time.Second
+	maxCooldownWait := time.Duration(cfg.MaxCooldownWaitSeconds) * time.Second
+	// cooldownDeadline bounds the TOTAL time one request may hold waiting for
+	// a cooling target. Zero (feature disabled) keeps the historical
+	// behaviour of failing the request at once. The retry budget still clamps
+	// every individual wait, so the shorter of the two wins.
+	cooldownDeadline := time.Time{}
+	if maxCooldownWait > 0 {
+		cooldownDeadline = time.Now().Add(maxCooldownWait)
+	}
+	// lastErr survives across passes: it carries the most recent failure
+	// detail into the "no available candidate" error when the request gives
+	// up.
 	var lastErr error
-	attempted := make(map[string]struct{}, len(route.Targets))
-	for attempt := 0; attempt < len(route.Targets); attempt++ {
-		// The retry budget covers the whole request, so it can run out while
-		// targets remain. Starting another attempt with a sliver of budget
-		// would only produce a timeout, so stop and report what is known.
-		if budget.exhaustedForAttempt() {
-			break
+	for {
+		// The total cooldown ceiling bounds the WHOLE request. Reached at the
+		// top of a pass, it means the previous pass failed and the request has
+		// already held as long as it is allowed to: surface the route error
+		// instead of looping again.
+		if !cooldownDeadline.IsZero() && !time.Now().Before(cooldownDeadline) {
+			detail := ""
+			if lastErr != nil {
+				detail = lastErr.Error()
+			}
+			return pluginapi.ExecutorResponse{}, newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
 		}
-		selection := p.runtime.SelectExcluding(route, attempted)
-		if selection.allCooling {
-			return pluginapi.ExecutorResponse{}, cooldownRouteError(route, selection.retryAfter)
-		}
-		if selection.model == "" {
-			// A candidate that was passed over only because its provider was
-			// full is not a sick target: report it as a capacity limit rather
-			// than as a route with nothing left.
-			if selection.providerBlocked {
-				return pluginapi.ExecutorResponse{}, providerBusyError(route)
-			}
-			break
-		}
-		attempted[routeKey(selection.model)] = struct{}{}
-		target := targetModel(requestedModel, selection.model)
-
-		// Retry the SAME target before moving on. A provider that answered
-		// "busy" a moment ago is usually ready a second later, and treating
-		// that as a dead target is what cools a healthy route.
-		//
-		// The provider slot stays claimed for the whole retry sequence. That is
-		// deliberate: the slot represents load we are sending upstream, and
-		// retrying is still sending to that provider. Releasing between
-		// attempts would let other requests take the freed capacity and push
-		// the busy provider further over its limit.
-		var (
-			response pluginapi.HostModelExecutionResponse
-			err      error
-			outcome  policyOutcome
-		)
-		for retriesUsed := 0; ; retriesUsed++ {
-			attemptStart := time.Now()
-			response, err = executeWithAttemptTimeout(host, hostRequest(request, bodyInfo, target, false), p.attemptTimeoutFor(route, selection.model, budget))
-			// TTFB for the buffered path is the whole host call: the first
-			// byte and the last byte land together. It still measures how
-			// long the target held the request open.
-			ttfb := time.Since(attemptStart)
-			timedOut := false
-			if _, isTimeout := err.(attemptTimeoutError); isTimeout {
-				timedOut = true
-			}
-			status := response.StatusCode
-			if status == 0 && err == nil {
-				status = http.StatusOK
-			}
-			if status == 0 && err != nil {
-				status = statusFromError(err)
-			}
-			if err == nil && status >= 200 && status < 300 {
-				p.runtime.RecordAttempt(route, selection.model, ttfb.Milliseconds(), false, false)
-				p.runtime.Release(selection.model)
-				p.runtime.MarkSuccess(route, selection.model)
-				return pluginapi.ExecutorResponse{
-					Payload: rewriteResponseModel(response.Body, requestedModel),
-					Headers: cloneHeader(response.Headers),
-					Metadata: map[string]any{
-						"route_alias":    route.Alias,
-						"selected_model": target,
-						"selected_index": attempt,
-					},
-				}, nil
-			}
-			if err == nil {
-				err = statusError{status: status, message: hostStatusMessage(target, status, response.Body)}
-			}
-			p.runtime.RecordAttempt(route, selection.model, ttfb.Milliseconds(), timedOut, true)
-			// The upstream's own Retry-After is more accurate than any
-			// configured number, so it is read here and handed to the policy.
-			retryAfter := parseRetryAfter(response.Headers)
-			consecutive := p.runtime.FailureCount(route, selection.model) + 1
-			outcome = decideAttempt(err, cfg, route, selection.model, retryAfter, consecutive)
-			if !shouldRetry(cfg, err, outcome, retriesUsed, budget) {
+		// One pass over the target pool. When every candidate is cooling the
+		// request waits (bounded by max_cooldown_wait_seconds and the retry
+		// budget) and re-enters the pass instead of dying with a 503, so a
+		// transient burst of failures does not tear a client task apart.
+		var coolingWait time.Duration
+		attempted := make(map[string]struct{}, len(route.Targets))
+		for attempt := 0; attempt < len(route.Targets); attempt++ {
+			// The retry budget covers the whole request, so it can run out while
+			// targets remain. Starting another attempt with a sliver of budget
+			// would only produce a timeout, so stop and report what is known.
+			if budget.exhaustedForAttempt() {
 				break
 			}
-			if pause := budget.pauseFor(backoff, retryAfter); pause > 0 {
-				time.Sleep(pause)
+			selection := p.runtime.SelectExcluding(route, attempted)
+			if selection.allCooling {
+				// Feature off: keep the historical behaviour of failing the
+				// request at once with the 429 cooldown error.
+				if maxCooldownWait <= 0 {
+					return pluginapi.ExecutorResponse{}, cooldownRouteError(route, selection.retryAfter)
+				}
+				coolingWait = selection.retryAfter
+				break
+			}
+			if selection.model == "" {
+				// A candidate that was passed over only because its provider was
+				// full is not a sick target: report it as a capacity limit rather
+				// than as a route with nothing left.
+				if selection.providerBlocked {
+					return pluginapi.ExecutorResponse{}, providerBusyError(route)
+				}
+				break
+			}
+			attempted[routeKey(selection.model)] = struct{}{}
+			target := targetModel(requestedModel, selection.model)
+
+			// Retry the SAME target before moving on. A provider that answered
+			// "busy" a moment ago is usually ready a second later, and treating
+			// that as a dead target is what cools a healthy route.
+			//
+			// The provider slot stays claimed for the whole retry sequence. That is
+			// deliberate: the slot represents load we are sending upstream, and
+			// retrying is still sending to that provider. Releasing between
+			// attempts would let other requests take the freed capacity and push
+			// the busy provider further over its limit.
+			var (
+				response pluginapi.HostModelExecutionResponse
+				err      error
+				outcome  policyOutcome
+			)
+			for retriesUsed := 0; ; retriesUsed++ {
+				attemptStart := time.Now()
+				response, err = executeWithAttemptTimeout(host, hostRequest(request, bodyInfo, target, false), p.attemptTimeoutFor(route, selection.model, budget))
+				// TTFB for the buffered path is the whole host call: the first
+				// byte and the last byte land together. It still measures how
+				// long the target held the request open.
+				ttfb := time.Since(attemptStart)
+				timedOut := false
+				if _, isTimeout := err.(attemptTimeoutError); isTimeout {
+					timedOut = true
+				}
+				status := response.StatusCode
+				if status == 0 && err == nil {
+					status = http.StatusOK
+				}
+				if status == 0 && err != nil {
+					status = statusFromError(err)
+				}
+				if err == nil && status >= 200 && status < 300 {
+					p.runtime.RecordAttempt(route, selection.model, ttfb.Milliseconds(), false, false)
+					p.runtime.Release(selection.model)
+					p.runtime.MarkSuccess(route, selection.model)
+					return pluginapi.ExecutorResponse{
+						Payload: rewriteResponseModel(response.Body, requestedModel),
+						Headers: cloneHeader(response.Headers),
+						Metadata: map[string]any{
+							"route_alias":    route.Alias,
+							"selected_model": target,
+							"selected_index": attempt,
+						},
+					}, nil
+				}
+				if err == nil {
+					err = statusError{status: status, message: hostStatusMessage(target, status, response.Body)}
+				}
+				p.runtime.RecordAttempt(route, selection.model, ttfb.Milliseconds(), timedOut, true)
+				// The upstream's own Retry-After is more accurate than any
+				// configured number, so it is read here and handed to the policy.
+				retryAfter := parseRetryAfter(response.Headers)
+				consecutive := p.runtime.FailureCount(route, selection.model) + 1
+				outcome = decideAttempt(err, cfg, route, selection.model, retryAfter, consecutive)
+				if !shouldRetry(cfg, err, outcome, retriesUsed, budget) {
+					break
+				}
+				if pause := budget.pauseFor(backoff, retryAfter); pause > 0 {
+					time.Sleep(pause)
+				}
+			}
+			// The retry sequence is over for this target, so its slot goes back.
+			p.runtime.Release(selection.model)
+			if !outcome.shouldFallback() {
+				p.runtime.ReleaseProbe(route, selection.model)
+				return pluginapi.ExecutorResponse{}, err
+			}
+			if outcome.penalises() {
+				p.runtime.MarkFailure(route, selection.model, outcome.Cooldown)
+			} else {
+				p.runtime.ReleaseProbe(route, selection.model)
+			}
+			lastErr = err
+		}
+		// The pass exhausted every candidate. A wait may have been computed
+		// mid-pass (every target cooling on entry), or it is discovered now:
+		// after every target failed, re-query with an empty exclusion set — if
+		// all of them are cooling, the request may hold until the earliest one
+		// frees instead of dying with the 503 it used to get.
+		if coolingWait <= 0 && lastErr != nil {
+			selection := p.runtime.SelectExcluding(route, nil)
+			switch {
+			case selection.allCooling:
+				coolingWait = selection.retryAfter
+			case selection.providerBlocked:
+				return pluginapi.ExecutorResponse{}, providerBusyError(route)
 			}
 		}
-		// The retry sequence is over for this target, so its slot goes back.
-		p.runtime.Release(selection.model)
-		if !outcome.shouldFallback() {
-			p.runtime.ReleaseProbe(route, selection.model)
-			return pluginapi.ExecutorResponse{}, err
+		// Hold only while the total cooldown ceiling still allows it. When the
+		// feature is off (maxCooldownWaitSeconds == 0) or the deadline passed,
+		// surface the route error exactly as before.
+		if coolingWait <= 0 || cooldownDeadline.IsZero() || !time.Now().Before(cooldownDeadline) {
+			detail := ""
+			if lastErr != nil {
+				detail = lastErr.Error()
+			}
+			return pluginapi.ExecutorResponse{}, newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
 		}
-		if outcome.penalises() {
-			p.runtime.MarkFailure(route, selection.model, outcome.Cooldown)
-		} else {
-			p.runtime.ReleaseProbe(route, selection.model)
+		if left := time.Until(cooldownDeadline); coolingWait > left {
+			coolingWait = left
 		}
-		lastErr = err
+		if !budget.waitForCooldown(coolingWait) {
+			detail := ""
+			if lastErr != nil {
+				detail = lastErr.Error()
+			}
+			return pluginapi.ExecutorResponse{}, newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
+		}
 	}
-	detail := ""
-	if lastErr != nil {
-		detail = lastErr.Error()
-	}
-	return pluginapi.ExecutorResponse{}, newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
 }
 
 func hostRequest(request pluginapi.ExecutorRequest, bodyInfo executionBody, model string, stream bool) pluginapi.HostModelExecutionRequest {

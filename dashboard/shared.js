@@ -27,6 +27,7 @@ const workspaceEl=document.getElementById('workspace');
 const enabledEl=document.getElementById('plugin-enabled');
 const priorityEl=document.getElementById('plugin-priority');
 const attemptTimeoutEl=document.getElementById('attempt-timeout');
+const maxCooldownWaitEl=document.getElementById('max-cooldown-wait');
 const saveStateEl=document.getElementById('save-state');
 const routesEl=document.getElementById('routes');
 const countEl=document.getElementById('route-count');

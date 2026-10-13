@@ -292,11 +292,13 @@ func (runtime *routeRuntime) Load(path string) {
 	now := runtime.now()
 	for key, entry := range stored.Routes {
 		state := &routeState{
-			signature: entry.Signature,
-			cursor:    entry.Cursor,
-			cooldowns: make(map[string]time.Time, len(entry.Cooldowns)),
-			failures:  make(map[string]int, len(entry.Failures)),
-			probing:   make(map[string]struct{}),
+			signature:    entry.Signature,
+			cursor:       entry.Cursor,
+			cooldowns:    make(map[string]time.Time, len(entry.Cooldowns)),
+			failures:     make(map[string]int, len(entry.Failures)),
+			lastFailures: make(map[string]time.Time),
+			metrics:      make(map[string]*targetMetrics),
+			probing:      make(map[string]struct{}),
 		}
 		for model, until := range entry.Cooldowns {
 			parsed, err := time.Parse(time.RFC3339Nano, until)

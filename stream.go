@@ -43,78 +43,133 @@ func (p *comboRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 	cfg := p.config
 	budget := newRetryBudget(cfg.RetryDeadlineSeconds)
 	backoff := time.Duration(cfg.RetryBackoffSeconds) * time.Second
+	maxCooldownWait := time.Duration(cfg.MaxCooldownWaitSeconds) * time.Second
+	cooldownDeadline := time.Time{}
+	if maxCooldownWait > 0 {
+		cooldownDeadline = time.Now().Add(maxCooldownWait)
+	}
 
 	// One heartbeat covers the whole request, retries included. CPA holds the
 	// response headers until the first chunk arrives, so every silent wait —
 	// each attempt AND each pause between them — would otherwise be dead air
-	// that the client's own timeout can expire.
+	// that the client's own timeout can expire. It keeps running while the
+	// request holds for a cooling target, so that wait is not dead air either.
 	heartbeat := startStreamHeartbeat(host, pluginStreamID, bodyInfo.responseProtocol)
 	defer heartbeat.Stop()
 
 	var lastErr error
-	attempted := make(map[string]struct{}, len(route.Targets))
-	for attempt := 0; attempt < len(route.Targets); attempt++ {
-		if budget.exhaustedForAttempt() {
-			break
+	for {
+		// The total cooldown ceiling bounds the WHOLE request. Reached at the
+		// top of a pass, it means the previous pass failed and the request has
+		// already held as long as it is allowed to: surface the route error
+		// instead of looping again.
+		if !cooldownDeadline.IsZero() && !time.Now().Before(cooldownDeadline) {
+			detail := ""
+			if lastErr != nil {
+				detail = lastErr.Error()
+			}
+			return newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
 		}
-		selection := p.runtime.SelectExcluding(route, attempted)
-		if selection.allCooling {
-			return cooldownRouteError(route, selection.retryAfter)
+		var coolingWait time.Duration
+		attempted := make(map[string]struct{}, len(route.Targets))
+		for attempt := 0; attempt < len(route.Targets); attempt++ {
+			if budget.exhaustedForAttempt() {
+				break
+			}
+			selection := p.runtime.SelectExcluding(route, attempted)
+			if selection.allCooling {
+				// Feature off: keep the historical behaviour of failing the
+				// request at once with the 429 cooldown error.
+				if maxCooldownWait <= 0 {
+					return cooldownRouteError(route, selection.retryAfter)
+				}
+				coolingWait = selection.retryAfter
+				break
+			}
+			if selection.model == "" {
+				if selection.providerBlocked {
+					return providerBusyError(route)
+				}
+				break
+			}
+			attempted[routeKey(selection.model)] = struct{}{}
+			target := targetModel(requestedModel, selection.model)
+
+			// Retry the same target before moving on, for the same reason the
+			// buffered path does: one "busy" answer does not make a dead target.
+			// The slot is held across the retries, since every retry still sends
+			// load to that provider.
+			var outcome streamAttemptOutcome
+			for retriesUsed := 0; ; retriesUsed++ {
+				outcome = forwardStreamAttempt(request, bodyInfo, target, requestedModel, pluginStreamID, host, p.attemptTimeoutFor(route, selection.model, budget), cfg, route, selection.model, p.runtime)
+				if outcome.err == nil {
+					break
+				}
+				// A stream that already emitted a payload cannot be spliced onto
+				// another attempt: the caller has seen the beginning of one answer.
+				if outcome.receivedPayload {
+					break
+				}
+				if !shouldRetry(cfg, outcome.err, outcome.decision, retriesUsed, budget) {
+					break
+				}
+				if pause := budget.pauseFor(backoff, 0); pause > 0 {
+					time.Sleep(pause)
+				}
+			}
+			// The stream is fully consumed by the time this returns, so the
+			// provider is no longer occupied and its slot goes back.
+			p.runtime.Release(selection.model)
+			if outcome.err == nil {
+				p.runtime.MarkSuccess(route, selection.model)
+				return nil
+			}
+			if outcome.receivedPayload || !outcome.decision.shouldFallback() {
+				p.runtime.ReleaseProbe(route, selection.model)
+				return outcome.err
+			}
+			if outcome.decision.penalises() {
+				p.runtime.MarkFailure(route, selection.model, outcome.decision.Cooldown)
+			} else {
+				p.runtime.ReleaseProbe(route, selection.model)
+			}
+			lastErr = outcome.err
 		}
-		if selection.model == "" {
-			if selection.providerBlocked {
+		// The pass exhausted every candidate. A wait may have been computed
+		// mid-pass (every target cooling on entry), or it is discovered now:
+		// after every target failed, re-query with an empty exclusion set — if
+		// all of them are cooling, the request may hold until the earliest one
+		// frees instead of dying with the 503 it used to get.
+		if coolingWait <= 0 && lastErr != nil {
+			selection := p.runtime.SelectExcluding(route, nil)
+			switch {
+			case selection.allCooling:
+				coolingWait = selection.retryAfter
+			case selection.providerBlocked:
 				return providerBusyError(route)
 			}
-			break
 		}
-		attempted[routeKey(selection.model)] = struct{}{}
-		target := targetModel(requestedModel, selection.model)
-
-		// Retry the same target before moving on, for the same reason the
-		// buffered path does: one "busy" answer does not make a dead target.
-		// The slot is held across the retries, since every retry still sends
-		// load to that provider.
-		var outcome streamAttemptOutcome
-		for retriesUsed := 0; ; retriesUsed++ {
-			outcome = forwardStreamAttempt(request, bodyInfo, target, requestedModel, pluginStreamID, host, p.attemptTimeoutFor(route, selection.model, budget), cfg, route, selection.model, p.runtime)
-			if outcome.err == nil {
-				break
+		// Hold only while the total cooldown ceiling still allows it. When the
+		// feature is off (maxCooldownWaitSeconds == 0) or the deadline passed,
+		// surface the route error exactly as before.
+		if coolingWait <= 0 || cooldownDeadline.IsZero() || !time.Now().Before(cooldownDeadline) {
+			detail := ""
+			if lastErr != nil {
+				detail = lastErr.Error()
 			}
-			// A stream that already emitted a payload cannot be spliced onto
-			// another attempt: the caller has seen the beginning of one answer.
-			if outcome.receivedPayload {
-				break
+			return newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
+		}
+		if left := time.Until(cooldownDeadline); coolingWait > left {
+			coolingWait = left
+		}
+		if !budget.waitForCooldown(coolingWait) {
+			detail := ""
+			if lastErr != nil {
+				detail = lastErr.Error()
 			}
-			if !shouldRetry(cfg, outcome.err, outcome.decision, retriesUsed, budget) {
-				break
-			}
-			if pause := budget.pauseFor(backoff, 0); pause > 0 {
-				time.Sleep(pause)
-			}
+			return newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
 		}
-		// The stream is fully consumed by the time this returns, so the
-		// provider is no longer occupied and its slot goes back.
-		p.runtime.Release(selection.model)
-		if outcome.err == nil {
-			p.runtime.MarkSuccess(route, selection.model)
-			return nil
-		}
-		if outcome.receivedPayload || !outcome.decision.shouldFallback() {
-			p.runtime.ReleaseProbe(route, selection.model)
-			return outcome.err
-		}
-		if outcome.decision.penalises() {
-			p.runtime.MarkFailure(route, selection.model, outcome.decision.Cooldown)
-		} else {
-			p.runtime.ReleaseProbe(route, selection.model)
-		}
-		lastErr = outcome.err
 	}
-	detail := ""
-	if lastErr != nil {
-		detail = lastErr.Error()
-	}
-	return newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
 }
 
 type streamAttemptOutcome struct {
