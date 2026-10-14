@@ -62,16 +62,16 @@ type modelRouterValidationRequest struct {
 func modelRouterManagementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
-			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/validate", Description: "Validate Combo Router configuration before saving it."},
+			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/validate", Description: "Kiểm tra cấu hình Combo Router trước khi lưu."},
 			// Health is consumed by the in-dashboard Sức khỏe tab, so it is an
 			// API route (no menu entry), NOT a resource: a resource would make
 			// CPAMC render a second plugin page that duplicates the tab.
-			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/health", Description: "Live per-target health snapshot (JSON)."},
+			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/health", Description: "Trạng thái sức khỏe theo từng đích, cập nhật trực tiếp (JSON)."},
 		},
 		Resources: []resourceRoute{{
 			Path:        "/config",
 			Menu:        "Combo Router",
-			Description: "Configure logical aliases and ordered model target pools.",
+			Description: "Cấu hình các tuyến alias và nhóm đích dự phòng theo thứ tự ưu tiên.",
 		}},
 	}
 }

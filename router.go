@@ -35,7 +35,7 @@ func (p *comboRouterPlugin) RegisterModels(_ context.Context, _ pluginapi.ModelR
 			OwnedBy:     pluginID,
 			DisplayName: alias,
 			Name:        alias,
-			Description: "CLIProxyAPI logical model route (" + route.Strategy + ")",
+			Description: "Tuyến model logic của CLIProxyAPI, chiến lược " + route.Strategy,
 			UserDefined: true,
 		})
 	}
