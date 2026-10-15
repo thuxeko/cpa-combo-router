@@ -34,6 +34,24 @@ func (err statusError) Error() string {
 func (err statusError) StatusCode() int   { return err.status }
 func (err statusError) ErrorCode() string { return err.code }
 
+// noCandidateError reports that the route ran out of candidates. It is a 429
+// (retryable) rather than a 503 so transient-failure-aware clients (oh-my-pi
+// turn-recovery, Claude Code) treat it as transient, and it carries a retry
+// hint the client parses from the message text (`retry-after-ms=`), so it
+// waits out the cooldown and re-issues instead of surfacing a terminal-looking
+// error. hintMs must be > 0; values below 1s are clamped.
+func noCandidateError(route modelRoute, hintMs int64, lastErr error) error {
+	if hintMs < 1000 {
+		hintMs = 1000
+	}
+	message := fmt.Sprintf("no available candidate for model route %q (retry-after-ms=%d)", route.Alias, hintMs)
+	detail := ""
+	if lastErr != nil {
+		detail = lastErr.Error()
+	}
+	return newRouteError(http.StatusTooManyRequests, "model_route_unavailable", route.Alias, message, detail)
+}
+
 func newRouteError(status int, code, alias, message, detail string) error {
 	errorBody := map[string]any{
 		"error": map[string]any{

@@ -151,7 +151,7 @@ func TestExecuteStreamAttemptsWeightedTargetOncePerRequest(t *testing.T) {
 		return pluginapi.HostModelStreamResponse{StatusCode: 429}, statusError{status: 429, message: request.Model + " unavailable"}
 	}
 	err := plugin.executeStreamWithHost(context.Background(), pluginapi.ExecutorRequest{Model: "weighted"}, "plugin-stream", host)
-	if statusFromError(err) != 503 || codeFromError(err, "") != "model_route_unavailable" {
+	if statusFromError(err) != 429 || codeFromError(err, "") != "model_route_unavailable" {
 		t.Fatalf("executeStreamWithHost() error = %v", err)
 	}
 	if len(host.startCalls) != 2 || host.startCalls[0].Model != "a" || host.startCalls[1].Model != "b" {

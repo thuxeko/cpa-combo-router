@@ -64,11 +64,7 @@ func (p *comboRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 		// already held as long as it is allowed to: surface the route error
 		// instead of looping again.
 		if !cooldownDeadline.IsZero() && !time.Now().Before(cooldownDeadline) {
-			detail := ""
-			if lastErr != nil {
-				detail = lastErr.Error()
-			}
-			return newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
+			return noCandidateError(route, 10_000, lastErr)
 		}
 		var coolingWait time.Duration
 		attempted := make(map[string]struct{}, len(route.Targets))
@@ -153,21 +149,17 @@ func (p *comboRouterPlugin) executeStreamWithHost(_ context.Context, request plu
 		// feature is off (maxCooldownWaitSeconds == 0) or the deadline passed,
 		// surface the route error exactly as before.
 		if coolingWait <= 0 || cooldownDeadline.IsZero() || !time.Now().Before(cooldownDeadline) {
-			detail := ""
-			if lastErr != nil {
-				detail = lastErr.Error()
+			hintMs := int64(5_000)
+			if coolingWait > 0 {
+				hintMs = coolingWait.Milliseconds()
 			}
-			return newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
+			return noCandidateError(route, hintMs, lastErr)
 		}
 		if left := time.Until(cooldownDeadline); coolingWait > left {
 			coolingWait = left
 		}
 		if !budget.waitForCooldown(coolingWait) {
-			detail := ""
-			if lastErr != nil {
-				detail = lastErr.Error()
-			}
-			return newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
+			return noCandidateError(route, coolingWait.Milliseconds(), lastErr)
 		}
 	}
 }

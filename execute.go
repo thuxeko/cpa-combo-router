@@ -94,11 +94,7 @@ func (p *comboRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 		// already held as long as it is allowed to: surface the route error
 		// instead of looping again.
 		if !cooldownDeadline.IsZero() && !time.Now().Before(cooldownDeadline) {
-			detail := ""
-			if lastErr != nil {
-				detail = lastErr.Error()
-			}
-			return pluginapi.ExecutorResponse{}, newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
+			return pluginapi.ExecutorResponse{}, noCandidateError(route, 10_000, lastErr)
 		}
 		// One pass over the target pool. When every candidate is cooling the
 		// request waits (bounded by max_cooldown_wait_seconds and the retry
@@ -228,21 +224,17 @@ func (p *comboRouterPlugin) executeWithHost(request pluginapi.ExecutorRequest, h
 		// feature is off (maxCooldownWaitSeconds == 0) or the deadline passed,
 		// surface the route error exactly as before.
 		if coolingWait <= 0 || cooldownDeadline.IsZero() || !time.Now().Before(cooldownDeadline) {
-			detail := ""
-			if lastErr != nil {
-				detail = lastErr.Error()
+			hintMs := int64(5_000)
+			if coolingWait > 0 {
+				hintMs = coolingWait.Milliseconds()
 			}
-			return pluginapi.ExecutorResponse{}, newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
+			return pluginapi.ExecutorResponse{}, noCandidateError(route, hintMs, lastErr)
 		}
 		if left := time.Until(cooldownDeadline); coolingWait > left {
 			coolingWait = left
 		}
 		if !budget.waitForCooldown(coolingWait) {
-			detail := ""
-			if lastErr != nil {
-				detail = lastErr.Error()
-			}
-			return pluginapi.ExecutorResponse{}, newRouteError(http.StatusServiceUnavailable, "model_route_unavailable", route.Alias, fmt.Sprintf("no available candidate for model route %q", route.Alias), detail)
+			return pluginapi.ExecutorResponse{}, noCandidateError(route, coolingWait.Milliseconds(), lastErr)
 		}
 	}
 }

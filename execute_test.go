@@ -195,7 +195,7 @@ routes:
 	if len(host.executeCalls) != 2 {
 		t.Fatalf("a 400 listed in fallback_on_status must be retried, calls = %d", len(host.executeCalls))
 	}
-	if statusFromError(err) != 503 || codeFromError(err, "") != "model_route_unavailable" {
+	if statusFromError(err) != 429 || codeFromError(err, "") != "model_route_unavailable" {
 		t.Fatalf("executeWithHost() error = %v", err)
 	}
 }
@@ -259,7 +259,7 @@ routes:
 	started := time.Now()
 	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
 	elapsed := time.Since(started)
-	if statusFromError(err) != 503 || codeFromError(err, "") != "model_route_unavailable" {
+	if statusFromError(err) != 429 || codeFromError(err, "") != "model_route_unavailable" {
 		t.Fatalf("executeWithHost() error = %v", err)
 	}
 	if len(host.executeCalls) != 1 {
@@ -302,7 +302,7 @@ func TestExecuteWithHostAttemptsWeightedTargetOncePerRequest(t *testing.T) {
 		return pluginapi.HostModelExecutionResponse{}, statusError{status: 503, message: request.Model + " unavailable"}
 	}}
 	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "weighted"}, host)
-	if statusFromError(err) != 503 || codeFromError(err, "") != "model_route_unavailable" {
+	if statusFromError(err) != 429 || codeFromError(err, "") != "model_route_unavailable" {
 		t.Fatalf("executeWithHost() error = %v", err)
 	}
 	if len(host.executeCalls) != 2 || host.executeCalls[0].Model != "a" || host.executeCalls[1].Model != "b" {
