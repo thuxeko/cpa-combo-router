@@ -44,7 +44,7 @@ func noCandidateError(route modelRoute, hintMs int64, lastErr error) error {
 	if hintMs < 1000 {
 		hintMs = 1000
 	}
-	message := fmt.Sprintf("no available candidate for model route %q (retry-after-ms=%d)", route.Alias, hintMs)
+	message := fmt.Sprintf("no available candidate for model route %q (429 rate limited, retry-after-ms=%d)", route.Alias, hintMs)
 	detail := ""
 	if lastErr != nil {
 		detail = lastErr.Error()
