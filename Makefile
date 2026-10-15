@@ -31,7 +31,7 @@ check: fmt-check test race vet
 
 build:
 	mkdir -p dist
-	CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -ldflags="-s -w -X main.pluginVersion=$(VERSION)" -o dist/$(PLUGIN_ID).$(LIB_EXT) .
+	CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -buildvcs=false -ldflags="-s -w -X main.pluginVersion=$(VERSION)" -o dist/$(PLUGIN_ID).$(LIB_EXT) .
 
 clean:
 	go clean

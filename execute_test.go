@@ -278,7 +278,7 @@ func TestExecuteWithHostReturnsUnavailableAfterCandidatesFail(t *testing.T) {
 		return pluginapi.HostModelExecutionResponse{}, statusError{status: 503, message: "provider unavailable"}
 	}}
 	_, err := plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
-	if statusFromError(err) != 503 || codeFromError(err, "") != "model_route_unavailable" || len(host.executeCalls) != 2 {
+	if statusFromError(err) != 429 || codeFromError(err, "") != "model_route_unavailable" || len(host.executeCalls) != 2 {
 		t.Fatalf("executeWithHost() error = %v, calls = %d", err, len(host.executeCalls))
 	}
 	_, err = plugin.executeWithHost(pluginapi.ExecutorRequest{Model: "smart"}, host)
